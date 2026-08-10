@@ -538,7 +538,7 @@ public class HiC {
             xContext.setBinOrigin(x);
             yContext.setBinOrigin(y);
 
-            superAdapter.repaint();
+            superAdapter.repaintMapPanels();
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -1235,8 +1235,19 @@ public class HiC {
         }
     }
 
+    public void clearAssemblyMappedMatrixZoomDataCache() {
+        clearAssemblyMappedCacheForDataset(dataset);
+        if (isControlLoaded()) {
+            clearAssemblyMappedCacheForDataset(controlDataset);
+        }
+    }
+
     private void clearAllCacheForDataset(Dataset ds) {
         ds.clearCache(false);
+    }
+
+    private void clearAssemblyMappedCacheForDataset(Dataset ds) {
+        ds.clearAssemblyMappedCache(false);
     }
 
     public List<Pair<GenericLocus, GenericLocus>> getRTreeHandlerIntersectingFeatures(String name, int g1, int g2) {

@@ -35,7 +35,7 @@ import java.io.BufferedInputStream;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.net.MalformedURLException;
-import java.net.URL;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -86,9 +86,9 @@ public class DatasetReaderFactory {
         LittleEndianInputStream dis = null;
 
         try {
-            stream = new SeekableHTTPStream(new URL(path)); // IGVSeekableStreamFactory.getStreamFor(path);
+            stream = new SeekableHTTPStream(URI.create(path).toURL()); // IGVSeekableStreamFactory.getStreamFor(path);
             dis = new LittleEndianInputStream(new BufferedInputStream(stream));
-        } catch (MalformedURLException e) {
+        } catch (IllegalArgumentException | MalformedURLException e) {
             try {
                 dis = new LittleEndianInputStream(new FileInputStream(path));
             } catch (Exception e2) {

@@ -26,10 +26,91 @@ package juicebox.data;
 
 import htsjdk.tribble.util.LittleEndianInputStream;
 
+import java.io.EOFException;
 import java.io.IOException;
 import java.util.List;
 
 public class BinReader {
+    public static void handleBinType(ByteArrayReader reader, byte type, int binXOffset, int binYOffset,
+                                     List<ContactRecord> records, boolean useShortBinX, boolean useShortBinY,
+                                     boolean useShort) throws IOException {
+        if (type == 1) {
+            int rowCount = useShortBinY ? reader.readShort() : reader.readInt();
+            for (int i = 0; i < rowCount; i++) {
+                int binY = binYOffset + (useShortBinY ? reader.readShort() : reader.readInt());
+                int colCount = useShortBinX ? reader.readShort() : reader.readInt();
+                for (int j = 0; j < colCount; j++) {
+                    int binX = binXOffset + (useShortBinX ? reader.readShort() : reader.readInt());
+                    float counts = useShort ? reader.readShort() : reader.readFloat();
+                    records.add(new ContactRecord(binX, binY, counts));
+                }
+            }
+        } else if (type == 2) {
+            int nPts = reader.readInt();
+            int width = reader.readShort();
+            for (int i = 0; i < nPts; i++) {
+                int row = i / width;
+                int col = i - row * width;
+                int binX = binXOffset + col;
+                int binY = binYOffset + row;
+                if (useShort) {
+                    short counts = reader.readShort();
+                    if (counts != Short.MIN_VALUE) {
+                        records.add(new ContactRecord(binX, binY, counts));
+                    }
+                } else {
+                    float counts = reader.readFloat();
+                    if (!Float.isNaN(counts)) {
+                        records.add(new ContactRecord(binX, binY, counts));
+                    }
+                }
+            }
+        } else {
+            throw new IOException("Unknown block type: " + type);
+        }
+    }
+
+    public static final class ByteArrayReader {
+        private final byte[] data;
+        private final int limit;
+        private int position;
+
+        public ByteArrayReader(byte[] data, int limit) {
+            this.data = data;
+            this.limit = limit;
+        }
+
+        public byte readByte() throws EOFException {
+            require(1);
+            return data[position++];
+        }
+
+        public short readShort() throws EOFException {
+            require(2);
+            int p = position;
+            position = p + 2;
+            return (short) ((data[p] & 0xff) | (data[p + 1] << 8));
+        }
+
+        public int readInt() throws EOFException {
+            require(4);
+            int p = position;
+            position = p + 4;
+            return (data[p] & 0xff) | ((data[p + 1] & 0xff) << 8)
+                    | ((data[p + 2] & 0xff) << 16) | (data[p + 3] << 24);
+        }
+
+        public float readFloat() throws EOFException {
+            return Float.intBitsToFloat(readInt());
+        }
+
+        private void require(int byteCount) throws EOFException {
+            if (position + byteCount > limit) {
+                throw new EOFException("Unexpected end of decompressed Hi-C block");
+            }
+        }
+    }
+
     public static void handleBinType(LittleEndianInputStream dis, byte type, int binXOffset, int binYOffset,
                                      List<ContactRecord> records, boolean useShortBinX, boolean useShortBinY,
                                      boolean useShort) throws IOException {

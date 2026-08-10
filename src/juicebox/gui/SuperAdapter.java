@@ -91,6 +91,22 @@ public class SuperAdapter {
         datasetTitle = newDatasetTitle;
     }
 
+    public static String getDatasetBaseName() {
+        String title = datasetTitle == null ? "" : datasetTitle.trim();
+        if (title.isEmpty()) return "juicebox";
+
+        int queryIndex = title.indexOf('?');
+        if (queryIndex >= 0) title = title.substring(0, queryIndex);
+        int fragmentIndex = title.indexOf('#');
+        if (fragmentIndex >= 0) title = title.substring(0, fragmentIndex);
+
+        int separatorIndex = Math.max(title.lastIndexOf('/'), title.lastIndexOf('\\'));
+        String fileName = separatorIndex >= 0 ? title.substring(separatorIndex + 1) : title;
+        int extensionIndex = fileName.lastIndexOf('.');
+        if (extensionIndex > 0) fileName = fileName.substring(0, extensionIndex);
+        return fileName.isEmpty() ? "juicebox" : fileName;
+    }
+
     public static void showMessageDialog(String message) {
         JOptionPane.showMessageDialog(MainWindow.getInstance(), message);
     }
@@ -248,6 +264,10 @@ public class SuperAdapter {
         if (layersPanel != null) layersPanel.repaint();
     }
 
+    public void repaintMapPanels() {
+        mainViewPanel.repaintMapPanels();
+    }
+
     public void safeLoadFromURLActionPerformed(final Runnable refresh1DLayers) {
         Runnable runnable = new Runnable() {
             public void run() {
@@ -379,6 +399,10 @@ public class SuperAdapter {
     public void unsafeClearAllMatrixZoomCache() {
         //not sure if this is a right place for this
         hic.clearAllMatrixZoomDataCache();
+    }
+
+    public void unsafeClearAssemblyMappedMatrixZoomCache() {
+        hic.clearAssemblyMappedMatrixZoomDataCache();
     }
 
     private void refreshMainOnly() {
@@ -1035,7 +1059,7 @@ public class SuperAdapter {
     public void safeClearAllMZDCache() {
         Runnable runnable = new Runnable() {
             public void run() {
-                unsafeClearAllMatrixZoomCache(); //split clear current zoom and put the rest in background? Seems to taking a lot of time
+                unsafeClearAssemblyMappedMatrixZoomCache();
                 refresh();
             }
         };

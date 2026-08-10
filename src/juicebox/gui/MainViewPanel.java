@@ -638,6 +638,13 @@ public class MainViewPanel {
         rulerPanelY.repaint();
     }
 
+    public void repaintMapPanels() {
+        heatmapPanel.repaint();
+        repaintGridRulerPanels();
+        repaintTrackPanels();
+        thumbnailPanel.repaint();
+    }
+
     public String getTrackPanelPrintouts(int x, int y) {
         String trackToolTip = "";
         try {

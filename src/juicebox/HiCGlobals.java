@@ -119,6 +119,11 @@ public class HiCGlobals {
         return Math.max(1, Runtime.getRuntime().availableProcessors());
     }
 
+    public static int getBlockReadThreadCount() {
+        int configuredThreads = Integer.getInteger("juicebox.blockReadThreads", 16);
+        return Math.max(1, Math.min(configuredThreads, getIdealThreadCount()));
+    }
+
     public static ExecutorService newFixedThreadPool() {
         return Executors.newFixedThreadPool(getIdealThreadCount());
     }

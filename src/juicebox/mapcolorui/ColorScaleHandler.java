@@ -35,14 +35,16 @@ import org.broad.igv.renderer.ColorScale;
 import org.broad.igv.renderer.ContinuousColorScale;
 
 import java.awt.*;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class ColorScaleHandler {
     private final PearsonColorScale pearsonColorScale = new PearsonColorScale();
-    private final Map<String, ContinuousColorScale> observedColorScaleMap = new HashMap<>();
-    private final Map<String, OEColorScale> ratioColorScaleMap = new HashMap<>();
+    // Tile rendering runs off the Swing event thread. Concurrent maps keep slider
+    // updates responsive while obsolete renders finish and are discarded.
+    private final Map<String, ContinuousColorScale> observedColorScaleMap = new ConcurrentHashMap<>();
+    private final Map<String, OEColorScale> ratioColorScaleMap = new ConcurrentHashMap<>();
     public static Color HIC_MAP_COLOR = Color.RED;
 
     public PearsonColorScale getPearsonColorScale() {
@@ -71,27 +73,15 @@ public class ColorScaleHandler {
     public void setNewDisplayRange(MatrixType displayOption, double min, double max, String key) {
 
         if (MatrixType.isOEColorScaleType(displayOption)) {
-
-            OEColorScale oeColorScale = ratioColorScaleMap.get(key);
-            if (oeColorScale == null) {
-                oeColorScale = new OEColorScale(displayOption);
-                ratioColorScaleMap.put(key, oeColorScale);
-            }
+            // Replace instead of mutating so an in-flight obsolete tile keeps a
+            // stable snapshot while the next generation sees the new threshold.
+            OEColorScale oeColorScale = new OEColorScale(displayOption);
             oeColorScale.setThreshold(max);
+            ratioColorScaleMap.put(key, oeColorScale);
 
         } else {
-
-            ContinuousColorScale observedColorScale = observedColorScaleMap.get(key);
-            if (observedColorScale == null) {
-                if (HiCGlobals.isDarkulaModeEnabled) {
-                    observedColorScale = new ContinuousColorScale(min, max, Color.black, HIC_MAP_COLOR);
-                } else {
-                    observedColorScale = new ContinuousColorScale(min, max, Color.white, HIC_MAP_COLOR);
-                }
-                observedColorScaleMap.put(key, observedColorScale);
-            }
-            observedColorScale.setNegEnd(min);
-            observedColorScale.setPosEnd(max);
+            Color lowColor = HiCGlobals.isDarkulaModeEnabled ? Color.black : Color.white;
+            observedColorScaleMap.put(key, new ContinuousColorScale(min, max, lowColor, HIC_MAP_COLOR));
         }
     }
 
@@ -108,8 +98,9 @@ public class ColorScaleHandler {
         if (MatrixType.isOEColorScaleType(displayOption)) {
             OEColorScale oeColorScale = ratioColorScaleMap.get(key);
             if (oeColorScale == null) {
-                oeColorScale = new OEColorScale(displayOption);
-                ratioColorScaleMap.put(key, oeColorScale);
+                OEColorScale candidate = new OEColorScale(displayOption);
+                OEColorScale existing = ratioColorScaleMap.putIfAbsent(key, candidate);
+                oeColorScale = existing == null ? candidate : existing;
             }
             return oeColorScale;
         } else {
@@ -129,7 +120,10 @@ public class ColorScaleHandler {
                 } else {
                     observedColorScale = new ContinuousColorScale(0, max, Color.white, HIC_MAP_COLOR);
                 }
-                observedColorScaleMap.put(key, observedColorScale);
+                ContinuousColorScale existing = observedColorScaleMap.putIfAbsent(key, observedColorScale);
+                if (existing != null) {
+                    observedColorScale = existing;
+                }
                 //mainWindow.updateColorSlider(0, 2 * max, max);
             }
             return observedColorScale;
@@ -142,8 +136,9 @@ public class ColorScaleHandler {
             OEColorScale oeColorScale = ratioColorScaleMap.get(key);
 
             if (oeColorScale == null) {
-                oeColorScale = new OEColorScale(displayOption);
-                ratioColorScaleMap.put(key, oeColorScale);
+                OEColorScale candidate = new OEColorScale(displayOption);
+                OEColorScale existing = ratioColorScaleMap.putIfAbsent(key, candidate);
+                oeColorScale = existing == null ? candidate : existing;
             }
             superAdapter.updateRatioColorSlider((int) oeColorScale.getMax(), oeColorScale.getThreshold());
         } else {

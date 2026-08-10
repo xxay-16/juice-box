@@ -121,7 +121,7 @@ public class MainWindow extends JFrame {
         // SwingUtilities.invokeAndWait(runnable);
 
         try {
-            URL url = new URL("https://s3.amazonaws.com/hicfiles.tc4ga.com/juicebox.version");
+            URL url = URI.create("https://s3.amazonaws.com/hicfiles.tc4ga.com/juicebox.version").toURL();
             URLConnection next = url.openConnection();
             BufferedReader reader = new BufferedReader(new InputStreamReader(next.getInputStream()));
             String latestVersion = reader.readLine();
@@ -420,17 +420,8 @@ public class MainWindow extends JFrame {
         if (option == 0) {
             setVisible(false);
             dispose();
-            String autoSaveFileName = DirectoryManager.getHiCDirectory() + "/" +
-                    System.nanoTime() + ".review.autosave.assembly";
-            try {
-                autoSaveFileName = DirectoryManager.getHiCDirectory() + "/" +
-                        (SuperAdapter.getDatasetTitle().split(".+?/(?=[^/]+$)")[1]).split("\\.(?=[^\\.]+$)")[0] +
-                        ".review.autosave.assembly";
-            } catch (Exception e) {
-                System.err.println("Unable to get desired file name");
-                System.err.println(e.getLocalizedMessage());
-            }
-            File autoSaveFile = new File(autoSaveFileName);
+            File autoSaveFile = new File(DirectoryManager.getHiCDirectory(),
+                    SuperAdapter.getDatasetBaseName() + ".review.autosave.assembly");
             autoSaveFile.delete();
             System.out.println("Exiting Main Window");
             System.exit(0);

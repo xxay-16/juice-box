@@ -110,6 +110,7 @@ public class HeatmapPanel extends JComponent {
         } catch (Exception ex) {
             return;
         }
+        if (zd == null) return;
 
         MatrixZoomData controlZd = null;
         try {

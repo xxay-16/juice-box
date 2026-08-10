@@ -39,7 +39,7 @@ import java.io.FilenameFilter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.MalformedURLException;
-import java.net.URL;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -103,10 +103,10 @@ public class HiCFileLoader {
                 StringBuilder title = new StringBuilder();
                 for (String url : urls) {
                     urlList.add(url);
-                    title.append((new URL(url)).getPath()).append(" ");
+                    title.append(URI.create(url).toURL().getPath()).append(" ");
                 }
                 superAdapter.safeLoad(urlList, control, title.toString());
-            } catch (MalformedURLException e1) {
+            } catch (IllegalArgumentException | MalformedURLException e1) {
                 superAdapter.launchFileLoadingError(urlString);
             }
         }

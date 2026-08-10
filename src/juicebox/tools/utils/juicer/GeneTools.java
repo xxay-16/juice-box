@@ -36,7 +36,7 @@ import java.io.BufferedReader;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.IOException;
-import java.net.URL;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -63,7 +63,7 @@ public class GeneTools {
         if (genomeID.equals("hg19") || genomeID.equals("hg38") || genomeID.equals("mm9") || genomeID.equals("mm10")) {
             String newURL = "http://hicfiles.s3.amazonaws.com/internal/" + genomeID + "_refGene.txt";
             try {
-                return MotifAnchorParser.downloadFromUrl(new URL(newURL), "genes");
+                return MotifAnchorParser.downloadFromUrl(URI.create(newURL).toURL(), "genes");
             } catch (IOException e) {
                 System.err.println("Unable to download file from online; attempting to use direct file path");
             }

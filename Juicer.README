@@ -147,14 +147,11 @@ access to GPU clusters through Amazon Web Services or a local research
 institution.
 
 *
-* Java 1.7 or 1.8 JDK (for compiling from source files)
+* JDK 25 (for compiling from source files)
 *
 
-The instructions here are for the Java 1.8 JDK.
-For Windows/Mac/Linux, the Java 1.8 JDK can be installed from here:
-   http://www.oracle.com/technetwork/java/javase/downloads/jdk8-downloads-2133151.html
-(Alternative) For Ubuntu/LinuxMint
-   http://tecadmin.net/install-oracle-java-8-jdk-8-ubuntu-via-ppa/
+Install JDK 25 for Windows, macOS, or Linux and set JAVA_HOME to that
+installation before running Ant.
 
 *
 * Apache Ant (for compiling from source files)
@@ -187,16 +184,13 @@ depending on your package installer
 --------------------------------
 Compiling Jars from Source Files
 --------------------------------
-1. You should have Java 1.7 (or 1.8) JDK and Apache Ant installed on your system. See
-   below for more information.
-2. Go to the folder containing the Juicebox source files and edit the
-   juicebox.properties file with the proper Java JDK Address.
+1. You should have JDK 25 and Apache Ant 1.10.15 or newer installed.
+2. Set JAVA_HOME to the JDK 25 installation.
 3. Open the command line, navigate to the folder containing the build.xml file
    and type
        ant
    The process should take no more than a minute to build on most machines.
-4. The jars are written to the directory out/.  You can change this by editing
-   the build.xml file.
+4. The jars are written to out/artifacts/.
 
 -------------
 Documentation

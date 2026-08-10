@@ -54,8 +54,8 @@ then you'll point to it (IntelliJ has lots of documentation on this sort of thin
 * Then go to `VCS` -> `checkout from version control`.
 * You'll need to do is be sure `*.sizes` is included as a file to be copied over to the class files.
   Set this up via IntelliJ `Preferences` -> `Compiler`. Add `?*.sizes` to the list of `Resource Patterns`.
-* While there, also go to `Java Compiler` and put this into additional command line options: `-Xlint:all -target 1.7`
-The former turns on all warnings, the latter gives some flexibility since some people haven't updated Java to 1.8 yet.
+* Set the project SDK and language level to JDK 25. The checked-in compiler configuration uses
+  `-Xlint:all --release 25`.
 * Then go to `Run` -> `Edit Configurations`.
 * With the `+` sign, add `Application`.
 * You'll create two of these, one for the GUI (call it Juicebox GUI or whatever you want, really) and one for the CLT.
@@ -83,12 +83,8 @@ The former turns on all warnings, the latter gives some flexibility since some p
 ----------------------------------
 Hardware and Software Requirements
 ----------------------------------
-The minimum software requirement to run Juicebox is a working Java installation
-(version > 1.6) on Windows, Linux, and Mac OSX.  We recommend using the latest
-Java version available, but please do not use the Java Beta Version. Minimum
-system requirements for running Java can be found at
-https://java.com/en/download/help/sysreq.xml. To download and install the latest
-Java Runtime Environment (JRE), please go to https://www.java.com/download.
+Juicebox now requires a JDK 25 installation on Windows, Linux, or macOS. The
+generated jars target Java 25 and therefore require a Java 25 runtime.
 
 We recommend having at least 2GB free RAM for the best user experience with
 Juicebox.
@@ -118,17 +114,10 @@ on how to use the Juicer tools.
 --------------------------------
 Compiling Jars from Source Files
 --------------------------------
-1. You should have Java 1.8 JDK and Apache Ant installed on your system. See below for more information.
-2. Go to the folder containing the Juicebox source files and edit the juicebox.properties file with the proper Java JDK Address.
-3. Open the command line, navigate to the folder containing the build.xml file and type ant The process should take no more than a minute to build on most machines.
-4. The jars are written to the directory out/. You can change this by editing the build.xml file.
-
-* Installing Java 1.8 JDK
-
-For Windows/Mac/Linux, the Java 1.8 JDK can be installed from here:
-https://www.oracle.com/technetwork/java/javase/downloads/jdk8-downloads-2133151.html
-(Alternative) For Ubuntu/LinuxMint
-https://tecadmin.net/install-oracle-java-8-jdk-8-ubuntu-via-ppa/
+1. Install JDK 25 and Apache Ant 1.10.15 or newer.
+2. Set `JAVA_HOME` to the JDK 25 installation and ensure `java`, `javac`, and `ant` are available.
+3. From the directory containing `build.xml`, run `ant`.
+4. The jars are written to `out/artifacts/`.
 
 * Installing Apache Ant
   Mac Ant should be installed on most Macs. To verify installation via the command prompt, type ant -version If Ant is not on your Mac, install it via homebrew. At the command prompt, type

@@ -1009,6 +1009,20 @@ public class Dataset {
         }
     }
 
+    public void clearAssemblyMappedCache(boolean onlyClearInter) {
+        for (Matrix matrix : matrices.values()) {
+            for (HiCZoom zoom : getBpZooms()) {
+                try {
+                    matrix.getZoomData(zoom).clearAssemblyMappedCache(onlyClearInter);
+                } catch (Exception e) {
+                    if (HiCGlobals.printVerboseComments) {
+                        System.err.println("Clearing assembly cache err: " + e.getLocalizedMessage());
+                    }
+                }
+            }
+        }
+    }
+
     public void clearCache(boolean onlyClearInter, HiCZoom zoom) {
         for (Matrix matrix : matrices.values()) {
             try {

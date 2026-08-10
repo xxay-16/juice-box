@@ -47,16 +47,18 @@ public class GeneralTileManager {
                                   MatrixZoomData zd, MatrixZoomData controlZd,
                                   double scaleFactor, Rectangle bounds, HiC hic, JComponent parent, SuperAdapter superAdapter) {
 
+        if (zd == null) return true;
         boolean allTilesNull = true;
+        boolean anyTileAvailable = false;
         MatrixType displayOption = hic.getDisplayOption();
         NormalizationType observedNormalizationType = hic.getObsNormalizationType();
         NormalizationType controlNormalizationType = hic.getControlNormalizationType();
 
         // tile numbers
         int tLeft = (int) (binOriginX / imageTileWidth);
-        int tRight = (int) Math.ceil(bRight / imageTileWidth);
+        int tRight = Math.max(tLeft, (int) Math.ceil(bRight / imageTileWidth) - 1);
         int tTop = (int) (binOriginY / imageTileWidth);
-        int tBottom = (int) Math.ceil(bBottom / imageTileWidth);
+        int tBottom = Math.max(tTop, (int) Math.ceil(bBottom / imageTileWidth) - 1);
 
         for (int tileRow = tTop; tileRow <= tBottom; tileRow++) {
             for (int tileColumn = tLeft; tileColumn <= tRight; tileColumn++) {
@@ -72,6 +74,7 @@ public class GeneralTileManager {
 
                 if (tile != null) {
                     allTilesNull = false;
+                    anyTileAvailable = true;
 
                     int imageWidth = tile.image.getWidth(null);
                     int imageHeight = tile.image.getHeight(null);
@@ -138,13 +141,20 @@ public class GeneralTileManager {
                     if (HiCGlobals.displayTiles) {
                         renderer.drawRect(xDest0, yDest0, (xDest1 - xDest0), (yDest1 - yDest0));
                     }
+                } else if (mapTileManager.isTilePending(zd, controlZd, tileRow, tileColumn, displayOption,
+                        observedNormalizationType, controlNormalizationType)) {
+                    allTilesNull = false;
                 }
             }
         }
 
         //In case of change to map settings, get map color limits and update slider:
         //TODO: || might not catch all changed at once, if more then one parameter changed...
-        if (hic.testZoomChanged() || hic.testDisplayOptionChanged() || hic.testNormalizationTypeChanged()) {
+        // With asynchronous rendering, a cache miss means the color scale may not
+        // exist yet. Preserve the change flags until at least one real tile has
+        // populated the scale; its completion repaint will then initialize the slider.
+        if (anyTileAvailable &&
+                (hic.testZoomChanged() || hic.testDisplayOptionChanged() || hic.testNormalizationTypeChanged())) {
             //In case render is called as a result of zoom change event, check if
             //We need to update slider with map range:
             String cacheKey = HeatmapRenderer.getColorScaleCacheKey(zd, displayOption, observedNormalizationType, controlNormalizationType);

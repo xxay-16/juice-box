@@ -34,6 +34,7 @@ import org.broad.igv.Globals;
 import org.broad.igv.util.ParsingUtils;
 
 import java.io.*;
+import java.net.URI;
 import java.net.URL;
 import java.net.URLConnection;
 import java.util.ArrayList;
@@ -114,9 +115,9 @@ public class MotifAnchorParser {
         try {
             if (motifLocation == MotifLocation.VIA_ID) {
                 String newURL = "https://hicfiles.s3.amazonaws.com/internal/motifs/" + genomeID + ".motifs.txt";
-                filePath = downloadFromUrl(new URL(newURL), "motifs");
+                filePath = downloadFromUrl(URI.create(newURL).toURL(), "motifs");
             } else if (motifLocation == MotifLocation.URL) {
-                filePath = downloadFromUrl(new URL(path), "motifs");
+                filePath = downloadFromUrl(URI.create(path).toURL(), "motifs");
             }
         } catch (Exception e) {
             System.err.println("Unable to find proper file via " + motifLocation);

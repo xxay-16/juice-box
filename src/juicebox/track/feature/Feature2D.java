@@ -27,9 +27,12 @@ package juicebox.track.feature;
 
 import juicebox.HiCGlobals;
 import juicebox.assembly.AssemblyHeatmapHandler;
+import juicebox.assembly.AssemblyScaffoldHandler;
+import juicebox.assembly.AssemblyStateTracker;
 import juicebox.assembly.Scaffold;
 import juicebox.data.ChromosomeHandler;
 import juicebox.data.anchor.MotifAnchor;
+import juicebox.gui.SuperAdapter;
 import juicebox.tools.utils.juicer.arrowhead.ArrowheadScore;
 import juicebox.tools.utils.juicer.hiccups.HiCCUPSUtils;
 
@@ -195,12 +198,17 @@ public class Feature2D implements Comparable<Feature2D> {
         String scaledEnd1 = formatter.format(end1 * HiCGlobals.hicMapScale);
         String scaledEnd2 = formatter.format(end2 * HiCGlobals.hicMapScale);
 
-        if (getFeatureType() == FeatureType.SCAFFOLD) {
-            Scaffold scaffold = AssemblyHeatmapHandler.getSuperAdapter().getAssemblyStateTracker().getAssemblyHandler().getScaffoldFromFeature(this);
-            scaledStart1 = formatter.format(scaffold.getCurrentStart() + 1);
-            scaledStart2 = formatter.format(scaffold.getCurrentStart() + 1);
-            scaledEnd1 = formatter.format(scaffold.getCurrentEnd());
-            scaledEnd2 = formatter.format(scaffold.getCurrentEnd());
+        if (getFeatureType() == FeatureType.SCAFFOLD && SuperAdapter.assemblyModeCurrentlyActive) {
+            SuperAdapter superAdapter = AssemblyHeatmapHandler.getSuperAdapter();
+            AssemblyStateTracker assemblyStateTracker = superAdapter == null ? null : superAdapter.getAssemblyStateTracker();
+            AssemblyScaffoldHandler assemblyHandler = assemblyStateTracker == null ? null : assemblyStateTracker.getAssemblyHandler();
+            Scaffold scaffold = assemblyHandler == null ? null : assemblyHandler.getScaffoldFromFeature(this);
+            if (scaffold != null) {
+                scaledStart1 = formatter.format(scaffold.getCurrentStart() + 1);
+                scaledStart2 = formatter.format(scaffold.getCurrentStart() + 1);
+                scaledEnd1 = formatter.format(scaffold.getCurrentEnd());
+                scaledEnd2 = formatter.format(scaffold.getCurrentEnd());
+            }
         }
 
         StringBuilder txt = new StringBuilder();

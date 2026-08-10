@@ -63,6 +63,7 @@ public class HeatmapMouseHandler extends MouseAdapter {
 
     public static final int clickDelay = 500;
     private static final int clickLong = 400;
+    private static final int PAN_FRAME_INTERVAL_MS = 16;
     private final List<Feature2D> highlightedFeatures = new ArrayList<>();
     private final List<Integer> selectedSuperscaffolds = new ArrayList<>();
     private final NumberFormat formatter = NumberFormat.getInstance();
@@ -98,12 +99,17 @@ public class HeatmapMouseHandler extends MouseAdapter {
     private boolean activelyEditingAssembly = false;
     private Feature2D debrisFeature = null;
     private Feature2D tempSelectedGroup = null;
+    private final Timer panUpdateTimer;
+    private double pendingPanPixelsX = 0;
+    private double pendingPanPixelsY = 0;
 
     public HeatmapMouseHandler(HiC hic, SuperAdapter superAdapter, HeatmapPanel parent) {
         this.hic = hic;
         this.superAdapter = superAdapter;
         this.parent = parent;
         this.firstAnnotation = true;
+        panUpdateTimer = new Timer(PAN_FRAME_INTERVAL_MS, e -> flushPendingPan());
+        panUpdateTimer.setRepeats(false);
         try {
             heatmapMouseBot = new Robot();
         } catch (AWTException ignored) {
@@ -621,6 +627,7 @@ public class HeatmapMouseHandler extends MouseAdapter {
     public void mousePressed(final MouseEvent e) {
         startTime = System.nanoTime();
         featureOptionMenuEnabled = false;
+        resetPendingPan();
         if (hic.isWholeGenome()) {
             if (e.isPopupTrigger()) {
                 getPopupMenu(e.getX(), e.getY()).show(parent, e.getX(), e.getY());
@@ -737,6 +744,11 @@ public class HeatmapMouseHandler extends MouseAdapter {
     @Override
     public void mouseReleased(final MouseEvent e) {
         endTime = System.nanoTime();
+        if (dragMode == DragMode.PAN) {
+            flushPendingPan();
+        } else {
+            resetPendingPan();
+        }
         if (e.isPopupTrigger()) {
             getPopupMenu(e.getX(), e.getY()).show(parent, e.getX(), e.getY());
             dragMode = DragMode.NONE;
@@ -998,6 +1010,7 @@ public class HeatmapMouseHandler extends MouseAdapter {
     }
 
     private void restoreDefaultVariables() {
+        resetPendingPan();
         dragMode = DragMode.NONE;
         adjustAnnotation = AdjustAnnotation.NONE;
         annotateRectangle = null;
@@ -1142,17 +1155,39 @@ public class HeatmapMouseHandler extends MouseAdapter {
             changedSize = true;
         } else {
             lastMousePoint = e.getPoint();    // Always save the last Point
-
-            double deltaXBins = -deltaX / hic.getScaleFactor();
-            double deltaYBins = -deltaY / hic.getScaleFactor();
-            hic.moveBy(deltaXBins, deltaYBins);
+            pendingPanPixelsX += deltaX;
+            pendingPanPixelsY += deltaY;
+            if (!panUpdateTimer.isRunning()) {
+                panUpdateTimer.start();
+            }
         }
+    }
+
+    private void flushPendingPan() {
+        panUpdateTimer.stop();
+        double deltaX = pendingPanPixelsX;
+        double deltaY = pendingPanPixelsY;
+        pendingPanPixelsX = 0;
+        pendingPanPixelsY = 0;
+
+        if (deltaX == 0 && deltaY == 0) {
+            return;
+        }
+
+        double scaleFactor = hic.getScaleFactor();
+        hic.moveBy(-deltaX / scaleFactor, -deltaY / scaleFactor);
+    }
+
+    private void resetPendingPan() {
+        panUpdateTimer.stop();
+        pendingPanPixelsX = 0;
+        pendingPanPixelsY = 0;
     }
 
     @Override
     public void mouseMoved(MouseEvent e) {
         try {
-            hic.getZd();
+            if (hic.getZd() == null) return;
         } catch (Exception ex) {
             return;
         }

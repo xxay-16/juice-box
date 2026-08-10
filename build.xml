@@ -36,7 +36,7 @@
 
     <property name="compiler.debug" value="on"/>
     <property name="compiler.generate.no.warnings" value="off"/>
-    <property name="compiler.args" value="-Xlint:all -target 1.8"/>
+    <property name="compiler.args" value="-Xlint:all --release 25"/>
     <property name="compiler.max.memory" value="700m"/>
     <patternset id="ignored.files">
         <exclude name="**/*.hprof/**"/>
@@ -85,43 +85,9 @@
         <include name="**/?*.cu"/>
     </patternset>
 
-    <!-- JDK definitions -->
-
-    <property name="jdk.bin.1.8" value="${jdk.home.1.8}/bin"/>
-    <path id="jdk.classpath.1.8">
-        <fileset dir="${jdk.home.1.8}">
-            <include name="lib/ant-javafx.jar"/>
-            <include name="lib/dt.jar"/>
-            <include name="lib/javafx-mx.jar"/>
-            <include name="lib/jconsole.jar"/>
-            <include name="lib/sa-jdi.jar"/>
-            <include name="lib/tools.jar"/>
-            <include name="jre/lib/charsets.jar"/>
-            <include name="jre/lib/deploy.jar"/>
-            <include name="jre/lib/javaws.jar"/>
-            <include name="jre/lib/jce.jar"/>
-            <include name="jre/lib/jfr.jar"/>
-            <include name="jre/lib/jfxswt.jar"/>
-            <include name="jre/lib/jsse.jar"/>
-            <include name="jre/lib/management-agent.jar"/>
-            <include name="jre/lib/plugin.jar"/>
-            <include name="jre/lib/resources.jar"/>
-            <include name="jre/lib/rt.jar"/>
-            <include name="jre/lib/ext/cldrdata.jar"/>
-            <include name="jre/lib/ext/dnsns.jar"/>
-            <include name="jre/lib/ext/jfxrt.jar"/>
-            <include name="jre/lib/ext/localedata.jar"/>
-            <include name="jre/lib/ext/nashorn.jar"/>
-            <include name="jre/lib/ext/sunec.jar"/>
-            <include name="jre/lib/ext/sunjce_provider.jar"/>
-            <include name="jre/lib/ext/sunpkcs11.jar"/>
-            <include name="jre/lib/ext/zipfs.jar"/>
-        </fileset>
-    </path>
-
-    <property name="project.jdk.home" value="${jdk.home.1.8}"/>
-    <property name="project.jdk.bin" value="${jdk.bin.1.8}"/>
-    <property name="project.jdk.classpath" value="jdk.classpath.1.8"/>
+    <!-- Use the JDK that runs Ant. Java 9+ no longer exposes the Java 8 rt.jar layout. -->
+    <property name="project.jdk.home" value="${java.home}"/>
+    <property name="project.jdk.bin" value="${project.jdk.home}/bin"/>
 
 
     <!-- Project Libraries -->
@@ -170,20 +136,12 @@
 
     <property name="module.jdk.home.juicebox" value="${project.jdk.home}"/>
     <property name="module.jdk.bin.juicebox" value="${project.jdk.bin}"/>
-    <property name="module.jdk.classpath.juicebox" value="${project.jdk.classpath}"/>
-
-    <property name="compiler.args.juicebox" value="-encoding UTF-8 -source 1.8  ${compiler.args}"/>
+    <property name="compiler.args.juicebox" value="-encoding UTF-8 ${compiler.args}"/>
 
     <property name="juicebox.output.dir" value="${module.juicebox.basedir}/out/production/Juicebox"/>
     <property name="juicebox.testoutput.dir" value="${module.juicebox.basedir}/out/test/Juicebox"/>
 
-    <path id="juicebox.module.bootclasspath">
-        <!-- Paths to be included in compilation bootclasspath -->
-        <pathelement location="${jdk.home.1.8}/jre/lib"/>
-    </path>
-
     <path id="juicebox.module.production.classpath">
-        <path refid="${module.jdk.classpath.juicebox}"/>
         <path refid="library.broadinstitute.classpath"/>
         <path refid="library.jcuda.classpath"/>
         <path refid="library.kotlin.classpath"/>
@@ -203,7 +161,6 @@
     </path>
 
     <path id="juicebox.module.classpath">
-        <path refid="${module.jdk.classpath.juicebox}"/>
         <pathelement location="${juicebox.output.dir}"/>
         <path refid="library.broadinstitute.classpath"/>
         <path refid="library.jcuda.classpath"/>
@@ -249,7 +206,6 @@
                nowarn="${compiler.generate.no.warnings}" memorymaximumsize="${compiler.max.memory}" fork="true"
                executable="${module.jdk.bin.juicebox}/javac">
             <compilerarg line="${compiler.args.juicebox}"/>
-            <bootclasspath refid="juicebox.module.bootclasspath"/>
             <classpath refid="juicebox.module.production.classpath"/>
             <src refid="juicebox.module.sourcepath"/>
             <patternset refid="excluded.from.compilation.juicebox"/>
@@ -272,7 +228,13 @@
     </target>
 
     <target name="init" description="Build initialization">
-        <!-- Perform any build initialization in this target -->
+        <fail message="Juicebox requires JDK 25 to build (Ant is running on Java ${ant.java.version}).">
+            <condition>
+                <not>
+                    <equals arg1="${ant.java.version}" arg2="25"/>
+                </not>
+            </condition>
+        </fail>
     </target>
 
     <target name="clean" depends="clean.module.juicebox" description="cleanup all"/>
@@ -298,6 +260,7 @@
             <zipfileset file="${basedir}/src/resources/manifests/juicebox_jar/META-INF/MANIFEST.MF" prefix="META-INF"/>
             <zipfileset dir="${juicebox.output.dir}"/>
             <zipfileset src="${basedir}/lib/general/jsi1.1.jar" excludes="META-INF/*.SF,META-INF/*.DSA,META-INF/*.RSA"/>
+            <zipfileset src="${basedir}/lib/general/commons-math3-3.6.1.jar"/>
             <zipfileset src="${basedir}/lib/broadinstitute/igv.jar" excludes="META-INF/*.SF,META-INF/*.DSA,META-INF/*.RSA"/>
             <zipfileset src="${basedir}/lib/broadinstitute/htsjdk-1.139.jar"/>
             <zipfileset src="${basedir}/lib/broadinstitute/log4j-core-2.11.0.jar"

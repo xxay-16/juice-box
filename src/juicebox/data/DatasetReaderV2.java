@@ -38,7 +38,6 @@ import juicebox.windowui.NormalizationHandler;
 import juicebox.windowui.NormalizationType;
 import org.broad.igv.Globals;
 import org.broad.igv.exceptions.HttpResponseException;
-import org.broad.igv.util.CompressionUtils;
 import org.broad.igv.util.Pair;
 import org.broad.igv.util.ParsingUtils;
 import org.broad.igv.util.stream.IGVSeekableStreamFactory;
@@ -47,8 +46,19 @@ import javax.swing.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.io.*;
+import java.lang.ref.Cleaner;
+import java.net.URI;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.zip.DataFormatException;
+import java.util.zip.Inflater;
 
 
 /**
@@ -59,6 +69,11 @@ public class DatasetReaderV2 extends AbstractDatasetReader {
 
     private static final int maxLengthEntryName = 100;
     private static final int MAX_BYTE_READ_SIZE = Integer.MAX_VALUE - 10;
+    private static final long SLOW_BLOCK_PHASE_NANOS = 100_000_000L;
+    private static final long SLOW_PHASE_LOG_INTERVAL_NANOS = 1_000_000_000L;
+    private static final AtomicLong lastSlowPhaseLogNanos = new AtomicLong();
+    private static final Cleaner CHANNEL_CLEANER = Cleaner.create();
+    private static final ThreadLocal<BlockBuffers> BLOCK_BUFFERS = ThreadLocal.withInitial(BlockBuffers::new);
     /**
      * Cache of chromosome name -> array of restriction sites
      */
@@ -75,11 +90,15 @@ public class DatasetReaderV2 extends AbstractDatasetReader {
     private boolean activeStatus = true;
     public static double[] globalTimeDiffThings = new double[5];
     private final IGVSeekableStreamFactory streamFactory = IGVSeekableStreamFactory.getInstance();
-    private final CompressionUtils compressionUtils = new CompressionUtils();
+    private final LocalChannelState localChannelState;
+    @SuppressWarnings("unused")
+    private final Cleaner.Cleanable localChannelCleanable;
 
     public DatasetReaderV2(String path) throws IOException {
         super(path);
         dataset = new Dataset(this);
+        localChannelState = openLocalChannel(path);
+        localChannelCleanable = localChannelState == null ? null : CHANNEL_CLEANER.register(this, localChannelState);
     }
 
     @Override
@@ -889,6 +908,10 @@ public class DatasetReaderV2 extends AbstractDatasetReader {
 
     private byte[] seekAndFullyReadCompressedBytes(IndexEntry idx) throws IOException {
         byte[] compressedBytes = new byte[idx.size];
+        if (localChannelState != null) {
+            readFullyAtPosition(localChannelState.channel, compressedBytes, idx.position);
+            return compressedBytes;
+        }
         SeekableStream stream = getValidStream();
         stream.seek(idx.position);
         stream.readFully(compressedBytes);
@@ -905,13 +928,77 @@ public class DatasetReaderV2 extends AbstractDatasetReader {
         }
         compressedBytes.add(new byte[(int) counter]);
 
+        if (localChannelState != null) {
+            long position = idx.position;
+            for (byte[] compressedBlock : compressedBytes) {
+                readFullyAtPosition(localChannelState.channel, compressedBlock, position);
+                position += compressedBlock.length;
+            }
+            return compressedBytes;
+        }
+
         SeekableStream stream = getValidStream();
         stream.seek(idx.position);
-        for (int i = 0; i < compressedBytes.size(); i++) {
-            stream.readFully(compressedBytes.get(i));
+        for (byte[] compressedBlock : compressedBytes) {
+            stream.readFully(compressedBlock);
         }
         stream.close();
         return compressedBytes;
+    }
+
+    private static void readFullyAtPosition(FileChannel channel, byte[] destination, long position) throws IOException {
+        readFullyAtPosition(channel, destination, destination.length, position);
+    }
+
+    private static void readFullyAtPosition(FileChannel channel, byte[] destination, int length, long position) throws IOException {
+        ByteBuffer buffer = ByteBuffer.wrap(destination, 0, length);
+        long currentPosition = position;
+        while (buffer.hasRemaining()) {
+            int bytesRead = channel.read(buffer, currentPosition);
+            if (bytesRead < 0) {
+                throw new EOFException("Unexpected end of .hic file at position " + currentPosition);
+            }
+            if (bytesRead == 0) {
+                Thread.yield();
+                continue;
+            }
+            currentPosition += bytesRead;
+        }
+    }
+
+    private static LocalChannelState openLocalChannel(String pathText) {
+        try {
+            Path localPath;
+            if (pathText.regionMatches(true, 0, "file:", 0, 5)) {
+                localPath = Paths.get(URI.create(pathText));
+            } else if (pathText.contains("://")) {
+                return null;
+            } else {
+                localPath = Paths.get(pathText);
+            }
+            if (!Files.isRegularFile(localPath)) {
+                return null;
+            }
+            return new LocalChannelState(FileChannel.open(localPath, StandardOpenOption.READ));
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static final class LocalChannelState implements Runnable {
+        private final FileChannel channel;
+
+        private LocalChannelState(FileChannel channel) {
+            this.channel = channel;
+        }
+
+        @Override
+        public void run() {
+            try {
+                channel.close();
+            } catch (IOException ignored) {
+            }
+        }
     }
     @Override
     public Block readNormalizedBlock(int blockNumber, MatrixZoomData zd, NormalizationType no) throws IOException {
@@ -971,20 +1058,24 @@ public class DatasetReaderV2 extends AbstractDatasetReader {
             if (idx != null) {
 
                 //System.out.println(" blockIndexPosition:" + idx.position);
+                BlockBuffers blockBuffers = BLOCK_BUFFERS.get();
+                byte[] compressedBytes = blockBuffers.ensureCompressedCapacity(idx.size);
+                long readStartNanos = System.nanoTime();
+                readCompressedBlock(idx, compressedBytes);
+                long readEndNanos = System.nanoTime();
                 timeDiffThings[1] = System.currentTimeMillis();
-                byte[] compressedBytes = seekAndFullyReadCompressedBytes(idx);
-                timeDiffThings[2] = System.currentTimeMillis();
+                timeDiffThings[2] = timeDiffThings[1] + Math.round((readEndNanos - readStartNanos) / 1_000_000.0);
                 byte[] buffer;
 
                 try {
-                    buffer = decompress(compressedBytes);
-                    timeDiffThings[3] = System.currentTimeMillis();
-
-                } catch (Exception e) {
+                    buffer = blockBuffers.decompress(compressedBytes, idx.size);
+                } catch (DataFormatException e) {
                     throw new RuntimeException("Block read error: " + e.getMessage());
                 }
+                long decompressEndNanos = System.nanoTime();
+                timeDiffThings[3] = timeDiffThings[2] + Math.round((decompressEndNanos - readEndNanos) / 1_000_000.0);
 
-                LittleEndianInputStream dis = new LittleEndianInputStream(new ByteArrayInputStream(buffer));
+                BinReader.ByteArrayReader dis = new BinReader.ByteArrayReader(buffer, blockBuffers.decompressedLength);
                 int nRecords = dis.readInt();
                 List<ContactRecord> records = new ArrayList<>(nRecords);
                 timeDiffThings[4] = System.currentTimeMillis();
@@ -1014,7 +1105,11 @@ public class DatasetReaderV2 extends AbstractDatasetReader {
 
                 }
                 b = new Block(blockNumber, records, zd.getBlockKey(blockNumber, NormalizationHandler.NONE));
-                timeDiffThings[5] = System.currentTimeMillis();
+                long parseEndNanos = System.nanoTime();
+                timeDiffThings[4] = timeDiffThings[3];
+                timeDiffThings[5] = timeDiffThings[4] + Math.round((parseEndNanos - decompressEndNanos) / 1_000_000.0);
+                maybeLogSlowBlockPhases(blockNumber, records.size(), readEndNanos - readStartNanos,
+                        decompressEndNanos - readEndNanos, parseEndNanos - decompressEndNanos);
                 for (int ii = 0; ii < timeDiffThings.length - 1; ii++) {
                     globalTimeDiffThings[ii] += (timeDiffThings[ii + 1] - timeDiffThings[ii]) / 1000.0;
                 }
@@ -1028,7 +1123,91 @@ public class DatasetReaderV2 extends AbstractDatasetReader {
         return b;
     }
 
-    private byte[] decompress(byte[] compressedBytes) {
-        return compressionUtils.decompress(compressedBytes);
+    private static void maybeLogSlowBlockPhases(int blockNumber, int recordCount, long readNanos,
+                                                long decompressNanos, long parseNanos) {
+        long totalNanos = readNanos + decompressNanos + parseNanos;
+        if (totalNanos < SLOW_BLOCK_PHASE_NANOS) {
+            return;
+        }
+        long now = System.nanoTime();
+        long previous = lastSlowPhaseLogNanos.get();
+        if (now - previous < SLOW_PHASE_LOG_INTERVAL_NANOS
+                || !lastSlowPhaseLogNanos.compareAndSet(previous, now)) {
+            return;
+        }
+        System.err.printf("Slow raw Hi-C block: total=%.1f ms, read=%.1f ms, decompress=%.1f ms, parse=%.1f ms, records=%d, block=%d%n",
+                totalNanos / 1_000_000.0, readNanos / 1_000_000.0, decompressNanos / 1_000_000.0,
+                parseNanos / 1_000_000.0, recordCount, blockNumber);
+    }
+
+    private void readCompressedBlock(IndexEntry idx, byte[] destination) throws IOException {
+        if (localChannelState != null) {
+            readFullyAtPosition(localChannelState.channel, destination, idx.size, idx.position);
+            return;
+        }
+        SeekableStream stream = getValidStream();
+        try {
+            stream.seek(idx.position);
+            int offset = 0;
+            while (offset < idx.size) {
+                int bytesRead = stream.read(destination, offset, idx.size - offset);
+                if (bytesRead < 0) {
+                    throw new EOFException("Unexpected end of .hic stream at position " + (idx.position + offset));
+                }
+                offset += bytesRead;
+            }
+        } finally {
+            stream.close();
+        }
+    }
+
+    private static final class BlockBuffers {
+        private static final int INITIAL_COMPRESSED_CAPACITY = 64 * 1024;
+        private static final int INITIAL_DECOMPRESSED_CAPACITY = 1024 * 1024;
+        private final Inflater inflater = new Inflater();
+        private byte[] compressed = new byte[INITIAL_COMPRESSED_CAPACITY];
+        private byte[] decompressed = new byte[INITIAL_DECOMPRESSED_CAPACITY];
+        private int decompressedLength;
+
+        private byte[] ensureCompressedCapacity(int requiredCapacity) {
+            if (compressed.length < requiredCapacity) {
+                compressed = new byte[growCapacity(compressed.length, requiredCapacity)];
+            }
+            return compressed;
+        }
+
+        private byte[] decompress(byte[] source, int sourceLength) throws DataFormatException {
+            inflater.reset();
+            inflater.setInput(source, 0, sourceLength);
+            int offset = 0;
+            while (!inflater.finished()) {
+                if (offset == decompressed.length) {
+                    decompressed = Arrays.copyOf(decompressed, growCapacity(decompressed.length, decompressed.length + 1));
+                }
+                int inflated = inflater.inflate(decompressed, offset, decompressed.length - offset);
+                if (inflated == 0) {
+                    if (inflater.needsDictionary()) {
+                        throw new DataFormatException("Compressed Hi-C block requires an unsupported dictionary");
+                    }
+                    if (inflater.needsInput()) {
+                        throw new DataFormatException("Compressed Hi-C block ended before the stream finished");
+                    }
+                }
+                offset += inflated;
+            }
+            decompressedLength = offset;
+            return decompressed;
+        }
+
+        private static int growCapacity(int currentCapacity, int requiredCapacity) {
+            long doubled = Math.max((long) currentCapacity * 2, requiredCapacity);
+            if (doubled > Integer.MAX_VALUE - 8L) {
+                if (requiredCapacity > Integer.MAX_VALUE - 8) {
+                    throw new OutOfMemoryError("Hi-C block is too large to decompress");
+                }
+                return Integer.MAX_VALUE - 8;
+            }
+            return (int) doubled;
+        }
     }
 }

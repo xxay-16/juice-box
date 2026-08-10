@@ -70,10 +70,14 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.zip.Deflater;
 
 
 public class MatrixZoomData {
+    private static final long SLOW_BLOCK_LOAD_NANOS = 100_000_000L;
+    private static final long SLOW_BLOCK_LOG_INTERVAL_NANOS = 1_000_000_000L;
+    private static final AtomicLong lastSlowBlockLogNanos = new AtomicLong();
 
     final Chromosome chr1;  // Chromosome on the X axis
     final Chromosome chr2;  // Chromosome on the Y axis
@@ -86,6 +90,7 @@ public class MatrixZoomData {
     protected final int blockColumnCount;     // number of block columns
     // Cache the last 20 blocks loaded
     protected final LRUCache<String, Block> blockCache = new LRUCache<>(500);
+    private final LRUCache<String, Block> rawAssemblyBlockCache = new LRUCache<>(500);
     private final HashMap<NormalizationType, BasicMatrix> pearsonsMap;
     private final HashMap<NormalizationType, BasicMatrix> normSquaredMaps;
     //private BigContactRecordList localCacheOfRecords = null;
@@ -526,9 +531,14 @@ public class MatrixZoomData {
 
     private void actuallyLoadGivenBlocks(final List<Block> blockList, Set<Integer> blocksToLoad,
                                          final NormalizationType no) {
+        if (blocksToLoad.isEmpty()) {
+            return;
+        }
+        long loadStartNanos = System.nanoTime();
         final AtomicInteger errorCounter = new AtomicInteger();
 
-        ExecutorService service = HiCGlobals.newFixedThreadPool();
+        int threadCount = Math.min(blocksToLoad.size(), HiCGlobals.getBlockReadThreadCount());
+        ExecutorService service = Executors.newFixedThreadPool(threadCount);
 
         final int binSize = getBinSize();
         final int chr1Index = chr1.getIndex();
@@ -540,7 +550,7 @@ public class MatrixZoomData {
                 public void run() {
                     try {
                         String key = getBlockKey(blockNumber, no);
-                        Block b = reader.readNormalizedBlock(blockNumber, MatrixZoomData.this, no);
+                        Block b = readNormalizedBlockForDisplay(blockNumber, no);
                         if (b == null) {
                             b = new Block(blockNumber, key);   // An empty block
                         }
@@ -578,13 +588,19 @@ public class MatrixZoomData {
         if (errorCounter.get() > 0) {
             System.err.println(errorCounter.get() + " errors while reading blocks");
         }
+        maybeLogSlowBlockLoad(System.nanoTime() - loadStartNanos, blocksToLoad.size(), threadCount);
     }
 
     private void actuallyLoadGivenBlocks(final List<Block> blockList, Set<Integer> blocksToLoad,
                                          final NormalizationType no, final int chr1Id, final int chr2Id) {
+        if (blocksToLoad.isEmpty()) {
+            return;
+        }
+        long loadStartNanos = System.nanoTime();
         final AtomicInteger errorCounter = new AtomicInteger();
 
-        ExecutorService service = Executors.newFixedThreadPool(200);
+        int threadCount = Math.min(blocksToLoad.size(), HiCGlobals.getBlockReadThreadCount());
+        ExecutorService service = Executors.newFixedThreadPool(threadCount);
 
         final int binSize = getBinSize();
 
@@ -594,7 +610,7 @@ public class MatrixZoomData {
                 public void run() {
                     try {
                         String key = getBlockKey(blockNumber, no, chr1Id, chr2Id);
-                        Block b = reader.readNormalizedBlock(blockNumber, MatrixZoomData.this, no);
+                        Block b = readNormalizedBlockForDisplay(blockNumber, no);
                         if (b == null) {
                             b = new Block(blockNumber, key);   // An empty block
                         }
@@ -632,6 +648,43 @@ public class MatrixZoomData {
         if (errorCounter.get() > 0) {
             System.err.println(errorCounter.get() + " errors while reading blocks");
         }
+        maybeLogSlowBlockLoad(System.nanoTime() - loadStartNanos, blocksToLoad.size(), threadCount);
+    }
+
+    private static void maybeLogSlowBlockLoad(long loadNanos, int blockCount, int threadCount) {
+        if (loadNanos < SLOW_BLOCK_LOAD_NANOS) {
+            return;
+        }
+        long now = System.nanoTime();
+        long previous = lastSlowBlockLogNanos.get();
+        if (now - previous < SLOW_BLOCK_LOG_INTERVAL_NANOS
+                || !lastSlowBlockLogNanos.compareAndSet(previous, now)) {
+            return;
+        }
+        System.err.printf("Slow Hi-C block load: %.1f ms, blocks=%d, threads=%d%n",
+                loadNanos / 1_000_000.0, blockCount, threadCount);
+    }
+
+    private Block readNormalizedBlockForDisplay(int blockNumber, NormalizationType normalizationType) throws IOException {
+        if (!SuperAdapter.assemblyModeCurrentlyActive || !HiCGlobals.useCache) {
+            return reader.readNormalizedBlock(blockNumber, MatrixZoomData.this, normalizationType);
+        }
+
+        String rawKey = getBlockKey(blockNumber, normalizationType);
+        synchronized (rawAssemblyBlockCache) {
+            if (rawAssemblyBlockCache.containsKey(rawKey)) {
+                return rawAssemblyBlockCache.get(rawKey);
+            }
+        }
+
+        Block rawBlock = reader.readNormalizedBlock(blockNumber, MatrixZoomData.this, normalizationType);
+        if (rawBlock == null) {
+            rawBlock = new Block(blockNumber, rawKey);
+        }
+        synchronized (rawAssemblyBlockCache) {
+            rawAssemblyBlockCache.put(rawKey, rawBlock);
+        }
+        return rawBlock;
     }
 
 
@@ -1225,7 +1278,22 @@ public class MatrixZoomData {
         if (onlyClearInter && isIntra) return;
         if (HiCGlobals.useCache) {
             blockCache.clear();
+            synchronized (rawAssemblyBlockCache) {
+                rawAssemblyBlockCache.clear();
+            }
         }
+        clearIteratorContainer();
+    }
+
+    public void clearAssemblyMappedCache(boolean onlyClearInter) {
+        if (onlyClearInter && isIntra) return;
+        if (HiCGlobals.useCache) {
+            blockCache.clear();
+        }
+        clearIteratorContainer();
+    }
+
+    private void clearIteratorContainer() {
         if (iteratorContainer != null) {
             iteratorContainer.clear();
             iteratorContainer = null;

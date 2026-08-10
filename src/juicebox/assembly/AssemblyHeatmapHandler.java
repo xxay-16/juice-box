@@ -32,20 +32,25 @@ import juicebox.gui.SuperAdapter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Created by muhammadsaadshamim on 4/17/17.
  */
 public class AssemblyHeatmapHandler {
 
+    private static final int MAX_LOCAL_BIN_MAP_SIZE = 262_144;
+    private static final int MAX_BIN_MAP_ENTRIES_PER_RECORD = 4;
+    private static final long SLOW_ASSEMBLY_MAPPING_NANOS = 100_000_000L;
+    private static final long SLOW_MAPPING_LOG_INTERVAL_NANOS = 1_000_000_000L;
+    private static final AtomicLong lastSlowMappingLogNanos = new AtomicLong();
     private static SuperAdapter superAdapter;
-    private static List<Scaffold> listOfOSortedAggregateScaffolds = new ArrayList<>();
-//    Does not seem to offer any speedup.
-//    private static Scaffold guessScaffold = null;
+    private static volatile AssemblyCoordinateMapper coordinateMapper = AssemblyCoordinateMapper.empty();
 
     public static void setListOfOSortedAggregateScaffolds(List<Scaffold> listOfAggregateScaffolds) {
-        AssemblyHeatmapHandler.listOfOSortedAggregateScaffolds = new ArrayList<>(listOfAggregateScaffolds);
-        Collections.sort(listOfOSortedAggregateScaffolds, Scaffold.originalStateComparator);
+        List<Scaffold> sortedScaffolds = new ArrayList<>(listOfAggregateScaffolds);
+        Collections.sort(sortedScaffolds, Scaffold.originalStateComparator);
+        coordinateMapper = new AssemblyCoordinateMapper(sortedScaffolds);
     }
 
     public static SuperAdapter getSuperAdapter() {
@@ -57,20 +62,37 @@ public class AssemblyHeatmapHandler {
     }
 
     public static Block modifyBlock(Block block, String key, int binSize, int chr1Idx, int chr2Idx) {
+        long mappingStartNanos = System.nanoTime();
         //temp fix for AllByAll. TODO: trace this!
         if (chr1Idx == 0 && chr2Idx == 0) {
             binSize = 1000 * binSize; // AllByAll is measured in kb
         }
 
-        List<ContactRecord> alteredContacts = new ArrayList<>();
-        for (ContactRecord record : block.getContactRecords()) {
+        List<ContactRecord> records = block.getContactRecords();
+        if (records.isEmpty()) {
+            return new Block(block.getNumber(), new ArrayList<>(), key);
+        }
 
-            int alteredAsmBinX = getAlteredAsmBin(record.getBinX(), binSize);
-            int alteredAsmBinY = getAlteredAsmBin(record.getBinY(), binSize);
+        double scaledBinSize = HiCGlobals.hicMapScale * binSize;
+        AssemblyCoordinateMapper mapper = coordinateMapper;
+        BinRangeMapper xBinMapper = BinRangeMapper.create(records, true, scaledBinSize, mapper);
+        BinRangeMapper yBinMapper = BinRangeMapper.create(records, false, scaledBinSize, mapper);
+
+        List<ContactRecord> alteredContacts = new ArrayList<>(records.size());
+        for (ContactRecord record : records) {
+
+            int alteredAsmBinX = xBinMapper.map(record.getBinX());
+            int alteredAsmBinY = yBinMapper.map(record.getBinY());
 
             if (alteredAsmBinX == -1 || alteredAsmBinY == -1) {
                 alteredContacts.add(record);
             } else {
+                int mappedBinX = Math.min(alteredAsmBinX, alteredAsmBinY);
+                int mappedBinY = Math.max(alteredAsmBinX, alteredAsmBinY);
+                if (mappedBinX == record.getBinX() && mappedBinY == record.getBinY()) {
+                    alteredContacts.add(record);
+                    continue;
+                }
                 if (alteredAsmBinX > alteredAsmBinY) {
                     alteredContacts.add(new ContactRecord(
                             alteredAsmBinY,
@@ -83,42 +105,125 @@ public class AssemblyHeatmapHandler {
             }
         }
         block = new Block(block.getNumber(), alteredContacts, key);
+        maybeLogSlowMapping(System.nanoTime() - mappingStartNanos, records.size(), binSize);
         return block;
     }
 
-
-
-    private static int getAlteredAsmBin(int binValue, int binSize) {
-
-        long originalFirstNucleotide = (long) (binValue * HiCGlobals.hicMapScale * binSize + 1);
-        long currentFirstNucleotide;
-        Scaffold aggregateScaffold = lookUpOriginalAggregateScaffold(originalFirstNucleotide);
-
-        if (aggregateScaffold != null) {
-            if (!aggregateScaffold.getInvertedVsInitial()) {
-                currentFirstNucleotide = (aggregateScaffold.getCurrentStart() + originalFirstNucleotide - aggregateScaffold.getOriginalStart());
-            } else {
-                currentFirstNucleotide = (aggregateScaffold.getCurrentEnd() - originalFirstNucleotide + 2 - (long) (HiCGlobals.hicMapScale * binSize) + aggregateScaffold.getOriginalStart());
-            }
-
-            return (int) ((currentFirstNucleotide - 1) / (HiCGlobals.hicMapScale * binSize));
+    private static void maybeLogSlowMapping(long mappingNanos, int recordCount, int binSize) {
+        if (mappingNanos < SLOW_ASSEMBLY_MAPPING_NANOS) {
+            return;
         }
-        return -1;
+        long now = System.nanoTime();
+        long previous = lastSlowMappingLogNanos.get();
+        if (now - previous < SLOW_MAPPING_LOG_INTERVAL_NANOS
+                || !lastSlowMappingLogNanos.compareAndSet(previous, now)) {
+            return;
+        }
+        System.err.printf("Slow assembly mapping: %.1f ms, records=%d, binSize=%d%n",
+                mappingNanos / 1_000_000.0, recordCount, binSize);
     }
 
-    private static Scaffold lookUpOriginalAggregateScaffold(long genomicPos) {
-//        Does not seem to offer much advantage
-//        if (guessScaffold!=null && guessScaffold.getOriginalStart()<genomicPos && guessScaffold.getOriginalEnd()>=genomicPos){
-//            return guessScaffold;
-//        }
-        Scaffold tmp = new Scaffold("tmp", 1, 1);
-        tmp.setOriginalStart(genomicPos);
-        int idx = Collections.binarySearch(listOfOSortedAggregateScaffolds, tmp, Scaffold.originalStateComparator);
-        if (-idx - 2 >= 0) {
-            return listOfOSortedAggregateScaffolds.get(-idx - 2);
+
+
+    private static final class BinRangeMapper {
+        private final int firstBin;
+        private final int[] mappedBins;
+        private final double scaledBinSize;
+        private final AssemblyCoordinateMapper mapper;
+
+        private BinRangeMapper(int firstBin, int[] mappedBins, double scaledBinSize, AssemblyCoordinateMapper mapper) {
+            this.firstBin = firstBin;
+            this.mappedBins = mappedBins;
+            this.scaledBinSize = scaledBinSize;
+            this.mapper = mapper;
         }
-        else
-            return null;
+
+        private static BinRangeMapper create(List<ContactRecord> records, boolean useX, double scaledBinSize,
+                                             AssemblyCoordinateMapper mapper) {
+            int minBin = Integer.MAX_VALUE;
+            int maxBin = Integer.MIN_VALUE;
+            for (ContactRecord record : records) {
+                int bin = useX ? record.getBinX() : record.getBinY();
+                minBin = Math.min(minBin, bin);
+                maxBin = Math.max(maxBin, bin);
+            }
+
+            long rangeSize = (long) maxBin - minBin + 1;
+            long usefulRangeLimit = Math.max(256L, (long) records.size() * MAX_BIN_MAP_ENTRIES_PER_RECORD);
+            if (rangeSize > MAX_LOCAL_BIN_MAP_SIZE || rangeSize > usefulRangeLimit) {
+                return new BinRangeMapper(0, null, scaledBinSize, mapper);
+            }
+
+            int[] mappedBins = new int[(int) rangeSize];
+            for (int offset = 0; offset < mappedBins.length; offset++) {
+                mappedBins[offset] = mapper.mapBin(minBin + offset, scaledBinSize);
+            }
+            return new BinRangeMapper(minBin, mappedBins, scaledBinSize, mapper);
+        }
+
+        private int map(int bin) {
+            if (mappedBins == null) {
+                return mapper.mapBin(bin, scaledBinSize);
+            }
+            return mappedBins[bin - firstBin];
+        }
+    }
+
+    private static final class AssemblyCoordinateMapper {
+        private final long[] originalStarts;
+        private final long[] currentStarts;
+        private final long[] currentEnds;
+        private final boolean[] inverted;
+
+        private AssemblyCoordinateMapper(List<Scaffold> sortedScaffolds) {
+            int size = sortedScaffolds.size();
+            originalStarts = new long[size];
+            currentStarts = new long[size];
+            currentEnds = new long[size];
+            inverted = new boolean[size];
+            for (int i = 0; i < size; i++) {
+                Scaffold scaffold = sortedScaffolds.get(i);
+                originalStarts[i] = scaffold.getOriginalStart();
+                currentStarts[i] = scaffold.getCurrentStart();
+                currentEnds[i] = scaffold.getCurrentEnd();
+                inverted[i] = scaffold.getInvertedVsInitial();
+            }
+        }
+
+        private static AssemblyCoordinateMapper empty() {
+            return new AssemblyCoordinateMapper(Collections.emptyList());
+        }
+
+        private int mapBin(int binValue, double scaledBinSize) {
+            long originalFirstNucleotide = (long) (binValue * scaledBinSize + 1);
+            int scaffoldIndex = findScaffoldIndex(originalFirstNucleotide);
+            if (scaffoldIndex < 0) {
+                return -1;
+            }
+
+            long currentFirstNucleotide;
+            if (!inverted[scaffoldIndex]) {
+                currentFirstNucleotide = currentStarts[scaffoldIndex] + originalFirstNucleotide - originalStarts[scaffoldIndex];
+            } else {
+                currentFirstNucleotide = currentEnds[scaffoldIndex] - originalFirstNucleotide + 2
+                        - (long) scaledBinSize + originalStarts[scaffoldIndex];
+            }
+            return (int) ((currentFirstNucleotide - 1) / scaledBinSize);
+        }
+
+        private int findScaffoldIndex(long genomicPosition) {
+            int low = 0;
+            int high = originalStarts.length;
+            while (low < high) {
+                int mid = (low + high) >>> 1;
+                if (originalStarts[mid] <= genomicPosition) {
+                    low = mid + 1;
+                } else {
+                    high = mid;
+                }
+            }
+            return low - 1;
+        }
 
     }
 }
