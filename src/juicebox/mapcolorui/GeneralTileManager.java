@@ -36,6 +36,7 @@ import java.awt.*;
 
 public class GeneralTileManager {
     private static final int imageTileWidth = 500;
+    private static final int PREFETCH_TILE_RINGS = 2;
 
     private final HiCMapTileManager mapTileManager;
 
@@ -148,6 +149,25 @@ public class GeneralTileManager {
             }
         }
 
+        // Preload two rings around the visible viewport. These requests
+        // use lower priority than visible tiles and are capped by the 128-tile
+        // cache, so a short pan usually lands on already rendered data.
+        int maxTileColumn = Math.max(0, (int) ((zd.getXGridAxis().getBinCount() - 1) / imageTileWidth));
+        int maxTileRow = Math.max(0, (int) ((zd.getYGridAxis().getBinCount() - 1) / imageTileWidth));
+        int prefetchLeft = Math.max(0, tLeft - PREFETCH_TILE_RINGS);
+        int prefetchRight = Math.min(maxTileColumn, tRight + PREFETCH_TILE_RINGS);
+        int prefetchTop = Math.max(0, tTop - PREFETCH_TILE_RINGS);
+        int prefetchBottom = Math.min(maxTileRow, tBottom + PREFETCH_TILE_RINGS);
+        for (int tileRow = prefetchTop; tileRow <= prefetchBottom; tileRow++) {
+            for (int tileColumn = prefetchLeft; tileColumn <= prefetchRight; tileColumn++) {
+                if (tileRow >= tTop && tileRow <= tBottom && tileColumn >= tLeft && tileColumn <= tRight) {
+                    continue;
+                }
+                mapTileManager.prefetchImageTile(zd, controlZd, tileRow, tileColumn, displayOption,
+                        observedNormalizationType, controlNormalizationType, hic, parent);
+            }
+        }
+
         //In case of change to map settings, get map color limits and update slider:
         //TODO: || might not catch all changed at once, if more then one parameter changed...
         // With asynchronous rendering, a cache miss means the color scale may not
@@ -230,4 +250,5 @@ public class GeneralTileManager {
             this.image = image;
         }
     }
+
 }

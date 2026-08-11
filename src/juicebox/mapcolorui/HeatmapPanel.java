@@ -223,7 +223,10 @@ public class HeatmapPanel extends JComponent {
         int wh = Math.max(maxBinCountX, maxBinCountY); // todo assumption for thumbnail
         //if (wh > 1000) wh=1000; // this can happen with single resolution hic files - breaks thumbnail localization
 
-        BufferedImage image = (BufferedImage) createImage(wh, wh);
+        if (wh <= 0) return null;
+        // Thumbnail rendering can run off the Swing event thread. A standalone
+        // BufferedImage avoids Component.createImage(), which depends on the UI peer.
+        BufferedImage image = new BufferedImage(wh, wh, BufferedImage.TYPE_INT_ARGB);
         Graphics2D g = image.createGraphics();
         if (HiCGlobals.isDarkulaModeEnabled) {
             g.setColor(Color.darkGray);

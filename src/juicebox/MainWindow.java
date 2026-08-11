@@ -52,6 +52,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class MainWindow extends JFrame {
 
@@ -70,6 +71,7 @@ public class MainWindow extends JFrame {
     public static Cursor groupSWCursor;
     private static MainWindow theInstance;
     private final ExecutorService threadExecutor = Executors.newFixedThreadPool(3);
+    private final AtomicInteger activeLongRunningTasks = new AtomicInteger();
     private final HiC hic; // The "model" object containing the state for this instance.
 
     private MainWindow() {
@@ -464,10 +466,15 @@ public class MainWindow extends JFrame {
     }
 
     private void showDisabledGlassPane(String caller, String displayMessage) {
-        disabledGlassPane.activate(displayMessage);
-        LayersPanel.disabledGlassPane.activate(displayMessage);
+        int activeTasks = activeLongRunningTasks.incrementAndGet();
+        SwingUtilities.invokeLater(() -> {
+            // Always update the message, but only one shared pane is needed for
+            // overlapping background operations.
+            disabledGlassPane.activate(displayMessage);
+            LayersPanel.disabledGlassPane.activate(displayMessage);
+        });
         if (HiCGlobals.printVerboseComments) {
-            System.out.println("Loading " + caller);
+            System.out.println("Loading " + caller + " (active=" + activeTasks + ")");
         }
     }
 
@@ -476,11 +483,16 @@ public class MainWindow extends JFrame {
     }
 
     private void hideDisabledGlassPane(String caller) {//getRootPane().getContentPane()
+        int activeTasks = activeLongRunningTasks.updateAndGet(value -> Math.max(0, value - 1));
         if (HiCGlobals.printVerboseComments) {
-            System.out.println("Done loading " + caller);
+            System.out.println("Done loading " + caller + " (active=" + activeTasks + ")");
         }
-        disabledGlassPane.deactivate();
-        LayersPanel.disabledGlassPane.deactivate();
+        if (activeTasks == 0) {
+            SwingUtilities.invokeLater(() -> {
+                disabledGlassPane.deactivate();
+                LayersPanel.disabledGlassPane.deactivate();
+            });
+        }
     }
 
     public void updateNamesFromImport(String path) {

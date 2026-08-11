@@ -48,6 +48,11 @@ import javax.swing.event.ChangeListener;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Created by muhammadsaadshamim on 8/4/15.
@@ -102,12 +107,27 @@ public class MainViewPanel {
     private final JLabel displayOptionLabel = new JLabel("Show");
     private MiniAnnotationsLayerPanel miniAnnotationsLayerPanel;
     private boolean tooltipAllowedToUpdate = true;
-    private boolean ignoreUpdateThumbnail = false;
+    private volatile boolean ignoreUpdateThumbnail = false;
+    private final AtomicLong thumbnailGeneration = new AtomicLong();
+    private static final AtomicInteger thumbnailThreadCounter = new AtomicInteger();
+    private final ThreadPoolExecutor thumbnailExecutor = (ThreadPoolExecutor) Executors.newFixedThreadPool(1, new ThreadFactory() {
+        @Override
+        public Thread newThread(Runnable runnable) {
+            Thread thread = new Thread(runnable,
+                    "juicebox-thumbnail-render-" + thumbnailThreadCounter.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        }
+    });
     private final JPanel tooltipPanel = new JPanel(new BorderLayout());
     private boolean controlIsLoaded = false;
 
     public void setIgnoreUpdateThumbnail(boolean flag) {
         ignoreUpdateThumbnail = flag;
+        if (flag) {
+            thumbnailGeneration.incrementAndGet();
+            thumbnailExecutor.getQueue().clear();
+        }
     }
 
     public JComboBox<Chromosome> getChrBox2() {
@@ -660,34 +680,53 @@ public class MainViewPanel {
     }
 
     public void updateThumbnail(HiC hic) {
+        long generation = thumbnailGeneration.incrementAndGet();
+        thumbnailExecutor.getQueue().clear();
         if (ignoreUpdateThumbnail) return;
-        //new Exception().printStackTrace();
+        // Assembly rendering remaps blocks and every contact record. Rendering a
+        // whole-matrix thumbnail in parallel competes directly with visible tiles
+        // for the same block-read threads and CPU. Keep the existing thumbnail
+        // while editing and regenerate it after Assembly mode is left.
+        if (SuperAdapter.assemblyModeCurrentlyActive) return;
 
-        if (hic.getMatrix() != null) {
-
-            //   MatrixZoomData zd0 = initialZoom == null ? hic.getMatrix().getFirstZoomData(hic.getZoom().getUnit()) :
-            //           hic.getMatrix().getZoomData(initialZoom);
-            MatrixZoomData zd0 = hic.getMatrix().getFirstZoomData(hic.getZoom().getUnit());
-            MatrixZoomData zdControl = null;
-            if (hic.getControlMatrix() != null) {
-                zdControl = hic.getControlMatrix().getFirstZoomData(hic.getZoom().getUnit());
-            }
-            try {
-                Image thumbnail = heatmapPanel.getThumbnailImage(zd0, zdControl,
-                        thumbnailPanel.getWidth(), thumbnailPanel.getHeight(),
-                        hic.getDisplayOption(), hic.getObsNormalizationType(), hic.getControlNormalizationType());
-                if (thumbnail != null) {
-                    thumbnailPanel.setImage(thumbnail);
+        if (hic.getMatrix() == null) {
+            SwingUtilities.invokeLater(() -> {
+                if (thumbnailGeneration.get() == generation) {
+                    thumbnailPanel.setImage(null);
                     thumbnailPanel.repaint();
                 }
-            } catch (Exception ignored) {
-                thumbnailPanel.setImage(null);
-                thumbnailPanel.repaint();
-            }
-
-        } else {
-            thumbnailPanel.setImage(null);
+            });
+            return;
         }
+
+        // Capture the complete render state before leaving the caller. Thumbnail
+        // generation can load many blocks, so it must not keep the global
+        // "Loading..." glass pane active after the main heatmap is visible.
+        MatrixZoomData zd0 = hic.getMatrix().getFirstZoomData(hic.getZoom().getUnit());
+        MatrixZoomData zdControl = hic.getControlMatrix() == null ? null :
+                hic.getControlMatrix().getFirstZoomData(hic.getZoom().getUnit());
+        int thumbnailWidth = thumbnailPanel.getWidth();
+        int thumbnailHeight = thumbnailPanel.getHeight();
+        MatrixType displayOption = hic.getDisplayOption();
+        NormalizationType observedNormalizationType = hic.getObsNormalizationType();
+        NormalizationType controlNormalizationType = hic.getControlNormalizationType();
+
+        if (zd0 == null || thumbnailWidth <= 0 || thumbnailHeight <= 0) return;
+
+        thumbnailExecutor.execute(() -> {
+            Image thumbnail = null;
+            try {
+                thumbnail = heatmapPanel.getThumbnailImage(zd0, zdControl, thumbnailWidth, thumbnailHeight,
+                        displayOption, observedNormalizationType, controlNormalizationType);
+            } catch (Exception ignored) {
+            }
+            final Image completedThumbnail = thumbnail;
+            SwingUtilities.invokeLater(() -> {
+                if (thumbnailGeneration.get() != generation) return;
+                thumbnailPanel.setImage(completedThumbnail);
+                thumbnailPanel.repaint();
+            });
+        });
     }
 
     public static void invertAssemblyMatCheck() {

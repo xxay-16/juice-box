@@ -54,9 +54,9 @@ public class DisabledGlassPane extends JComponent implements KeyListener {
 
         setOpaque(false);
         setCursor(Cursor.getPredefinedCursor(cursor));
-        Color base = UIManager.getColor("inactiveCaptionBorder");
-        Color background = new Color(base.getRed(), base.getGreen(), base.getBlue(), 128);
-        setBackground(background);
+        // Keep the loading glass pane visually transparent. It still captures
+        // mouse/key input and shows the status text without dimming the heatmap.
+        setBackground(new Color(0, 0, 0, 0));
         setLayout(new GridBagLayout());
         message.setFont(HiCGlobals.font(30, true));
         //  Add a message label to the glass pane
@@ -77,14 +77,10 @@ public class DisabledGlassPane extends JComponent implements KeyListener {
         setFocusTraversalKeysEnabled(false);
     }
 
-    /*
-     *  The component is transparent but we want to paint the background
-     *  to give it the disabled look.
-     */
+    /* The loading glass pane must not obscure the content underneath it. */
     @Override
     protected void paintComponent(Graphics g) {
-        g.setColor(getBackground());
-        g.fillRect(0, 0, getSize().width, getSize().height);
+        // Intentionally empty: event interception and the message label remain active.
     }
 
     /*

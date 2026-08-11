@@ -76,8 +76,10 @@ import java.util.zip.Deflater;
 
 public class MatrixZoomData {
     private static final long SLOW_BLOCK_LOAD_NANOS = 100_000_000L;
+    private static final long SLOW_ASSEMBLY_BLOCK_SELECTION_NANOS = 25_000_000L;
     private static final long SLOW_BLOCK_LOG_INTERVAL_NANOS = 1_000_000_000L;
     private static final AtomicLong lastSlowBlockLogNanos = new AtomicLong();
+    private static final AtomicLong lastSlowAssemblySelectionLogNanos = new AtomicLong();
 
     final Chromosome chr1;  // Chromosome on the X axis
     final Chromosome chr2;  // Chromosome on the Y axis
@@ -414,8 +416,10 @@ public class MatrixZoomData {
 
     private List<Block> addNormalizedBlocksToListAssembly(final List<Block> blockList, int binX1, int binY1, int binX2, int binY2,
                                                           final NormalizationType no) {
+        long selectionStartNanos = System.nanoTime();
 
         Set<Integer> blocksToLoad = new HashSet<>();
+        Set<Integer> selectedBlockNumbers = new HashSet<>();
 
         // get aggregate scaffold handler
         AssemblyScaffoldHandler aFragHandler = AssemblyHeatmapHandler.getSuperAdapter().getAssemblyStateTracker().getAssemblyHandler();
@@ -431,86 +435,105 @@ public class MatrixZoomData {
                 (long) (actualBinSize * binX1 * HiCGlobals.hicMapScale), (long) (actualBinSize * binX2 * HiCGlobals.hicMapScale));
         List<Scaffold> yAxisAggregateScaffolds = aFragHandler.getIntersectingAggregateFeatures(
                 (long) (actualBinSize * binY1 * HiCGlobals.hicMapScale), (long) (actualBinSize * binY2 * HiCGlobals.hicMapScale));
-    
-        long x1pos, x2pos, y1pos, y2pos;
 
-        for (Scaffold xScaffold : xAxisAggregateScaffolds) {
+        double xViewStart = actualBinSize * binX1 * HiCGlobals.hicMapScale;
+        double xViewEnd = actualBinSize * binX2 * HiCGlobals.hicMapScale;
+        double yViewStart = actualBinSize * binY1 * HiCGlobals.hicMapScale;
+        double yViewEnd = actualBinSize * binY2 * HiCGlobals.hicMapScale;
 
-            if (HiCGlobals.phasing && xScaffold.getLength() < (actualBinSize / 2) * HiCGlobals.hicMapScale) {
-                continue;
-            }
+        Set<Integer> xBlockColumns = getAssemblyAxisBlockIndices(
+                xAxisAggregateScaffolds, xViewStart, xViewEnd, actualBinSize);
+        Set<Integer> yBlockRows = getAssemblyAxisBlockIndices(
+                yAxisAggregateScaffolds, yViewStart, yViewEnd, actualBinSize);
 
-            for (Scaffold yScaffold : yAxisAggregateScaffolds) {
+        addAssemblyBlockProducts(selectedBlockNumbers, yBlockRows, xBlockColumns);
+        if (chr1.getIndex() == chr2.getIndex()) {
+            addAssemblyBlockProducts(selectedBlockNumbers, xBlockColumns, yBlockRows);
+        }
 
-                if (HiCGlobals.phasing && yScaffold.getLength() < (actualBinSize / 2) * HiCGlobals.hicMapScale) {
-                    continue;
-                }
-
-                x1pos = (long) (xScaffold.getOriginalStart() / HiCGlobals.hicMapScale);
-                x2pos = (long) (xScaffold.getOriginalEnd() / HiCGlobals.hicMapScale);
-                y1pos = (long) (yScaffold.getOriginalStart() / HiCGlobals.hicMapScale);
-                y2pos = (long) (yScaffold.getOriginalEnd() / HiCGlobals.hicMapScale);
-              
-                // have to case long because of thumbnail, maybe fix thumbnail instead
-    
-                if (xScaffold.getCurrentStart() < actualBinSize * binX1 * HiCGlobals.hicMapScale) {
-                    if (!xScaffold.getInvertedVsInitial()) {
-                        x1pos = (int) ((xScaffold.getOriginalStart() + actualBinSize * binX1 * HiCGlobals.hicMapScale - xScaffold.getCurrentStart()) / HiCGlobals.hicMapScale);
-                    } else {
-                        x2pos = (int) ((xScaffold.getOriginalStart() - actualBinSize * binX1 * HiCGlobals.hicMapScale + xScaffold.getCurrentEnd()) / HiCGlobals.hicMapScale);
-                    }
-                }
-
-                if (yScaffold.getCurrentStart() < actualBinSize * binY1 * HiCGlobals.hicMapScale) {
-                    if (!yScaffold.getInvertedVsInitial()) {
-                        y1pos = (int) ((yScaffold.getOriginalStart() + actualBinSize * binY1 * HiCGlobals.hicMapScale - yScaffold.getCurrentStart()) / HiCGlobals.hicMapScale);
-                    } else {
-                        y2pos = (int) ((yScaffold.getOriginalStart() - actualBinSize * binY1 * HiCGlobals.hicMapScale + yScaffold.getCurrentEnd()) / HiCGlobals.hicMapScale);
-                    }
-                }
-
-                if (xScaffold.getCurrentEnd() > actualBinSize * binX2 * HiCGlobals.hicMapScale) {
-                    if (!xScaffold.getInvertedVsInitial()) {
-                        x2pos = (int) ((xScaffold.getOriginalStart() + actualBinSize * binX2 * HiCGlobals.hicMapScale - xScaffold.getCurrentStart()) / HiCGlobals.hicMapScale);
-                    } else {
-                        x1pos = (int) ((xScaffold.getOriginalStart() - actualBinSize * binX2 * HiCGlobals.hicMapScale + xScaffold.getCurrentEnd()) / HiCGlobals.hicMapScale);
-                    }
-                }
-
-                if (yScaffold.getCurrentEnd() > actualBinSize * binY2 * HiCGlobals.hicMapScale) {
-                    if (!yScaffold.getInvertedVsInitial()) {
-                        y2pos = (int) ((yScaffold.getOriginalStart() + actualBinSize * binY2 * HiCGlobals.hicMapScale - yScaffold.getCurrentStart()) / HiCGlobals.hicMapScale);
-                    } else {
-                        y1pos = (int) ((yScaffold.getOriginalStart() - actualBinSize * binY2 * HiCGlobals.hicMapScale + yScaffold.getCurrentEnd()) / HiCGlobals.hicMapScale);
-                    }
-                }
-    
-                long[] genomePosition = new long[]{
-                        x1pos, x2pos, y1pos, y2pos
-                };
-
-                List<Integer> tempBlockNumbers = getBlockNumbersForRegionFromGenomePosition(genomePosition);
-                for (int blockNumber : tempBlockNumbers) {
-                    if (!blocksToLoad.contains(blockNumber)) {
-                        String key = getBlockKey(blockNumber, no);
-                        Block b;
-                        //temp fix for AllByAll. TODO: trace this!
-                        if (HiCGlobals.useCache && blockCache.containsKey(key)) {
-                            b = blockCache.get(key);
-                            blockList.add(b);
-                        } else {
-                            blocksToLoad.add(blockNumber);
-                        }
-                    }
-                }
+        for (int blockNumber : selectedBlockNumbers) {
+            String key = getBlockKey(blockNumber, no);
+            if (HiCGlobals.useCache && blockCache.containsKey(key)) {
+                blockList.add(blockCache.get(key));
+            } else {
+                blocksToLoad.add(blockNumber);
             }
         }
 
         // Remove basic duplicates here
         // Actually load new blocks
+        maybeLogSlowAssemblyBlockSelection(System.nanoTime() - selectionStartNanos,
+                xAxisAggregateScaffolds.size(), yAxisAggregateScaffolds.size(),
+                xBlockColumns.size(), yBlockRows.size(), selectedBlockNumbers.size(), blocksToLoad.size());
         actuallyLoadGivenBlocks(blockList, blocksToLoad, no);
 
         return new ArrayList<>(new HashSet<>(blockList));
+    }
+
+    private Set<Integer> getAssemblyAxisBlockIndices(List<Scaffold> scaffolds, double viewStart, double viewEnd,
+                                                     long actualBinSize) {
+        Set<Integer> blockIndices = new HashSet<>();
+        double scale = HiCGlobals.hicMapScale;
+        long resolution = zoom.getBinSize();
+
+        for (Scaffold scaffold : scaffolds) {
+            if (HiCGlobals.phasing && scaffold.getLength() < (actualBinSize / 2) * scale) {
+                continue;
+            }
+
+            long firstPosition = (long) (scaffold.getOriginalStart() / scale);
+            long lastPosition = (long) (scaffold.getOriginalEnd() / scale);
+
+            if (scaffold.getCurrentStart() < viewStart) {
+                if (!scaffold.getInvertedVsInitial()) {
+                    firstPosition = (int) ((scaffold.getOriginalStart() + viewStart - scaffold.getCurrentStart()) / scale);
+                } else {
+                    lastPosition = (int) ((scaffold.getOriginalStart() - viewStart + scaffold.getCurrentEnd()) / scale);
+                }
+            }
+
+            if (scaffold.getCurrentEnd() > viewEnd) {
+                if (!scaffold.getInvertedVsInitial()) {
+                    lastPosition = (int) ((scaffold.getOriginalStart() + viewEnd - scaffold.getCurrentStart()) / scale);
+                } else {
+                    firstPosition = (int) ((scaffold.getOriginalStart() - viewEnd + scaffold.getCurrentEnd()) / scale);
+                }
+            }
+
+            long firstBin = firstPosition / resolution;
+            long lastBin = lastPosition / resolution;
+            int firstBlock = (int) (firstBin / blockBinCount);
+            int lastBlock = (int) ((lastBin + 1) / blockBinCount);
+            for (int block = firstBlock; block <= lastBlock; block++) {
+                blockIndices.add(block);
+            }
+        }
+        return blockIndices;
+    }
+
+    private void addAssemblyBlockProducts(Set<Integer> blockNumbers, Set<Integer> rows, Set<Integer> columns) {
+        for (int row : rows) {
+            int rowOffset = row * getBlockColumnCount();
+            for (int column : columns) {
+                blockNumbers.add(rowOffset + column);
+            }
+        }
+    }
+
+    private static void maybeLogSlowAssemblyBlockSelection(long selectionNanos, int xScaffolds,
+                                                            int yScaffolds, int xBlockColumns, int yBlockRows,
+                                                            int selectedBlockCount, int loadedBlockCount) {
+        if (selectionNanos < SLOW_ASSEMBLY_BLOCK_SELECTION_NANOS) return;
+        long now = System.nanoTime();
+        long previous = lastSlowAssemblySelectionLogNanos.get();
+        if (now - previous < SLOW_BLOCK_LOG_INTERVAL_NANOS
+                || !lastSlowAssemblySelectionLogNanos.compareAndSet(previous, now)) {
+            return;
+        }
+        System.err.printf("Slow assembly block selection: %.1f ms, xScaffolds=%d, yScaffolds=%d, " +
+                        "oldPairs=%d, xBlockColumns=%d, yBlockRows=%d, selectedBlocks=%d, loadedBlocks=%d%n",
+                selectionNanos / 1_000_000.0, xScaffolds, yScaffolds,
+                (long) xScaffolds * yScaffolds, xBlockColumns, yBlockRows, selectedBlockCount, loadedBlockCount);
     }
 
 //    private List<Contig2D> retrieveContigsIntersectingWithWindow(Feature2DHandler handler, Rectangle currentWindow) {
@@ -571,10 +594,7 @@ public class MatrixZoomData {
             service.submit(loader);
         }
 
-        // done submitting all jobs
         service.shutdown();
-
-        // wait for all to finish
         try {
             service.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
         } catch (InterruptedException e) {
@@ -631,10 +651,7 @@ public class MatrixZoomData {
             service.submit(loader);
         }
 
-        // done submitting all jobs
         service.shutdown();
-
-        // wait for all to finish
         try {
             service.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
         } catch (InterruptedException e) {
