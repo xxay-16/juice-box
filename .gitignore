@@ -1,0 +1,7 @@
+# Created by .gitignore support plugin (hsz.mobi)
+*.iml
+.idea/workspace.xml
+*.DS_Store
+out/
+logs/
+.vscode
