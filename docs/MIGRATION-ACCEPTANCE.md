@@ -34,9 +34,23 @@
 
 ## 阶段门
 
-1. Reader Gate：真实 `.hic` Header、Footer、Matrix 和 Block 结果对照通过。
-2. CPU Gate：核心矩阵类型的参考 Tile 对照通过。
+1. Reader Gate：真实 `.hic` Header、Footer、Matrix 和 raw observed Block 结果对照通过。**`genome.hic` v8 已通过。**
+2. CPU Gate：raw observed 的 R32F Tile 与 PNG 参考导出已建立；其他矩阵语义尚未通过。
 3. GPU Gate：拖动、缩放、调色、显存预算和任务取消通过。
 4. Assembly Gate：编辑、版本化失效和 Undo/Redo 对照通过。
 5. UI Gate：通过上述门槛后再决定 Qt/QML、Slint、egui 或其他 UI。
 6. Release Gate：兼容、稳定性、portable 发布和长时间运行全部通过后，才考虑替换 Java 主程序。
+
+## 本地真实数据回归
+
+真实测试数据不提交仓库。将 `.hic` 与 `.assembly` 放到仓库同级的 `data/`
+目录后，在 PowerShell 中运行：
+
+```powershell
+.\tools\verify-real-data.ps1
+```
+
+该检查会运行 Rust workspace 测试，并以 `1_1` 矩阵的每个 BP 分辨率比对
+Rust 与当前 Java Reader 的 Block 数、contact record 数、原始 counts 总和与逐 record 指纹；随后
+解析 assembly。它为 v8 assembly 输入提供 Reader Gate 的可重复证据，但不替代
+v9+、Observed/Control、normalization、CPU 像素或 Assembly 编辑的后续验收。

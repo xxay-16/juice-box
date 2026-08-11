@@ -12,6 +12,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("version={}", file.header.version);
     println!("genome={}", file.header.genome_id);
     println!("chromosomes={}", file.header.chromosomes.len());
+    for chromosome in &file.header.chromosomes {
+        println!(
+            "chromosome index={} name={} length={}",
+            chromosome.index, chromosome.name, chromosome.length
+        );
+    }
     println!("bp_resolutions={:?}", file.header.bp_resolutions);
     println!(
         "fragment_resolutions={:?}",

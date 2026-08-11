@@ -1,8 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
+    "rust/assembly-core",
     "rust/hic-core",
     "rust/heatmap-core",
+    "rust/heatmap-cpu",
     "rust/heatmap-wgpu",
 ]
 
@@ -14,6 +16,8 @@ rust-version = "1.85"
 [workspace.dependencies]
 anyhow = "1.0"
 bytemuck = { version = "1.25", features = ["derive"] }
+flate2 = "1.1"
+image = { version = "0.25", default-features = false, features = ["png"] }
 pollster = "0.4"
 thiserror = "2.0"
 wgpu = "24.0"

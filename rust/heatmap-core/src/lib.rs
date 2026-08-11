@@ -54,6 +54,53 @@ impl IntensityTile {
             values,
         )
     }
+
+    pub fn from_contacts<I>(
+        key: TileKey,
+        source_bin_count_x: u32,
+        source_bin_count_y: u32,
+        output_size: u32,
+        symmetric: bool,
+        contacts: I,
+    ) -> Self
+    where
+        I: IntoIterator<Item = (i32, i32, f32)>,
+    {
+        assert!(source_bin_count_x > 0 && source_bin_count_y > 0 && output_size > 0);
+        let mut values = vec![0.0_f32; output_size as usize * output_size as usize];
+        for (bin_x, bin_y, counts) in contacts {
+            if bin_x < 0 || bin_y < 0 || !counts.is_finite() || counts <= 0.0 {
+                continue;
+            }
+            let x = ((bin_x as u64 * output_size as u64) / source_bin_count_x as u64)
+                .min(output_size as u64 - 1) as usize;
+            let y = ((bin_y as u64 * output_size as u64) / source_bin_count_y as u64)
+                .min(output_size as u64 - 1) as usize;
+            values[y * output_size as usize + x] += counts;
+            if symmetric && x != y {
+                values[x * output_size as usize + y] += counts;
+            }
+        }
+        for value in &mut values {
+            *value = value.ln_1p();
+        }
+        Self::new(key, output_size, output_size, values)
+    }
+
+    pub fn positive_percentile(&self, percentile: f32) -> f32 {
+        let mut values: Vec<f32> = self
+            .values
+            .iter()
+            .copied()
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .collect();
+        if values.is_empty() {
+            return 1.0;
+        }
+        values.sort_unstable_by(f32::total_cmp);
+        let index = ((values.len() - 1) as f32 * percentile.clamp(0.0, 1.0)).round() as usize;
+        values[index].max(f32::EPSILON)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -102,5 +149,27 @@ mod tests {
         assert_eq!(viewport.generation, 2);
         assert_eq!(viewport.offset, [1.0, 2.0]);
         assert_eq!(viewport.scale, 2.0);
+    }
+
+    #[test]
+    fn rasterizes_and_mirrors_contacts() {
+        let tile = IntensityTile::from_contacts(
+            TileKey {
+                dataset: 1,
+                matrix_type: 0,
+                normalization: 0,
+                assembly_version: 0,
+                resolution: 10,
+                x: 0,
+                y: 0,
+            },
+            10,
+            10,
+            10,
+            true,
+            [(2, 7, 3.0)],
+        );
+        assert_eq!(tile.values[7 * 10 + 2], 4.0_f32.ln());
+        assert_eq!(tile.values[2 * 10 + 7], 4.0_f32.ln());
     }
 }

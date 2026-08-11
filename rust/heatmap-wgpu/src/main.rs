@@ -1,15 +1,17 @@
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
+use assembly_core::AssemblyDocument;
 use bytemuck::{Pod, Zeroable};
-use heatmap_core::{IntensityTile, Viewport};
-use hic_core::HicFile;
+use heatmap_core::{IntensityTile, TileKey, Viewport};
+use hic_core::{HicFile, MatrixUnit};
 use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalPosition,
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
+    keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowAttributes, WindowId},
 };
 
@@ -267,21 +269,26 @@ impl GpuState {
     }
 }
 
-#[derive(Default)]
 struct App {
     window: Option<Arc<Window>>,
     gpu: Option<GpuState>,
     viewport: Viewport,
     dragging: bool,
     last_cursor: Option<PhysicalPosition<f64>>,
-    hic_path: Option<PathBuf>,
+    tile: IntensityTile,
+    title: String,
 }
 
 impl App {
-    fn new(hic_path: Option<PathBuf>) -> Self {
+    fn new(tile: IntensityTile, title: String, viewport: Viewport) -> Self {
         Self {
-            hic_path,
-            ..Default::default()
+            window: None,
+            gpu: None,
+            viewport,
+            dragging: false,
+            last_cursor: None,
+            tile,
+            title,
         }
     }
 }
@@ -291,25 +298,12 @@ impl ApplicationHandler for App {
         if self.window.is_some() {
             return;
         }
-        let metadata = self.hic_path.as_ref().map(HicFile::open);
-        let title = match metadata {
-            Some(Ok(file)) => format!(
-                "Juicebox Rust PoC — {} — hic v{} — {} chromosomes — {} matrices",
-                file.path().display(),
-                file.header.version,
-                file.header.chromosomes.len(),
-                file.master_index.len()
-            ),
-            Some(Err(error)) => format!("Juicebox Rust PoC — .hic error: {error}"),
-            None => "Juicebox Rust PoC — R32F GPU viewport".to_owned(),
-        };
         let window = Arc::new(
             event_loop
-                .create_window(WindowAttributes::default().with_title(title))
+                .create_window(WindowAttributes::default().with_title(&self.title))
                 .expect("window creation failed"),
         );
-        let tile = IntensityTile::demo(512);
-        let gpu = pollster::block_on(GpuState::new(window.clone(), &tile))
+        let gpu = pollster::block_on(GpuState::new(window.clone(), &self.tile))
             .expect("GPU initialization failed");
         self.gpu = Some(gpu);
         self.window = Some(window);
@@ -370,6 +364,25 @@ impl ApplicationHandler for App {
                 self.viewport.zoom(1.12_f32.powf(amount));
                 window.request_redraw();
             }
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                match event.physical_key {
+                    PhysicalKey::Code(KeyCode::ArrowUp | KeyCode::Equal) => {
+                        self.viewport.color_max *= 1.12;
+                        window.request_redraw();
+                    }
+                    PhysicalKey::Code(KeyCode::ArrowDown | KeyCode::Minus) => {
+                        self.viewport.color_max =
+                            (self.viewport.color_max / 1.12).max(f32::EPSILON);
+                        window.request_redraw();
+                    }
+                    PhysicalKey::Code(KeyCode::KeyR) => {
+                        self.viewport.offset = [0.0, 0.0];
+                        self.viewport.scale = 1.0;
+                        window.request_redraw();
+                    }
+                    _ => {}
+                }
+            }
             WindowEvent::RedrawRequested => {
                 if let Some(gpu) = self.gpu.as_mut() {
                     match gpu.render(self.viewport) {
@@ -389,8 +402,99 @@ impl ApplicationHandler for App {
 }
 
 fn main() -> Result<()> {
-    let hic_path = std::env::args_os().nth(1).map(PathBuf::from);
+    let mut arguments = std::env::args_os().skip(1);
+    let hic_path = arguments
+        .next()
+        .map(PathBuf::from)
+        .context("usage: heatmap-wgpu <file.hic> [matrix-key] [bin-size]")?;
+    let matrix_key = arguments
+        .next()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "1_1".to_owned());
+    let requested_bin_size = arguments
+        .next()
+        .map(|value| value.to_string_lossy().parse::<u32>())
+        .transpose()
+        .context("bin size must be a positive integer")?
+        .unwrap_or(2_500_000);
+
+    let file = HicFile::open(&hic_path)?;
+    let matrix = file.read_matrix(&matrix_key)?;
+    let zoom = matrix
+        .zooms
+        .iter()
+        .filter(|zoom| zoom.unit == MatrixUnit::BasePairs)
+        .min_by_key(|zoom| zoom.bin_size.abs_diff(requested_bin_size))
+        .context("matrix contains no base-pair resolution")?;
+    let records = file.read_all_blocks(zoom)?;
+    let chromosome_x = file
+        .header
+        .chromosomes
+        .get(matrix.chromosome_1 as usize)
+        .context("matrix chromosome 1 is outside the header dictionary")?;
+    let chromosome_y = file
+        .header
+        .chromosomes
+        .get(matrix.chromosome_2 as usize)
+        .context("matrix chromosome 2 is outside the header dictionary")?;
+    let bin_count_x = chromosome_x.length.div_ceil(u64::from(zoom.bin_size)) as u32;
+    let bin_count_y = chromosome_y.length.div_ceil(u64::from(zoom.bin_size)) as u32;
+    let tile = IntensityTile::from_contacts(
+        TileKey {
+            dataset: 1,
+            matrix_type: 0,
+            normalization: 0,
+            assembly_version: 0,
+            resolution: zoom.bin_size,
+            x: 0,
+            y: 0,
+        },
+        bin_count_x,
+        bin_count_y,
+        1024,
+        matrix.chromosome_1 == matrix.chromosome_2,
+        records
+            .iter()
+            .map(|record| (record.bin_x, record.bin_y, record.counts)),
+    );
+    let viewport = Viewport {
+        color_max: tile.positive_percentile(0.995),
+        ..Viewport::default()
+    };
+    let assembly = load_sibling_assembly(&hic_path)?;
+    let title = format!(
+        "Juicebox Rust — {} — {} @ {} bp — {} contacts — REAL HIC{}",
+        hic_path.display(),
+        matrix_key,
+        zoom.bin_size,
+        records.len(),
+        assembly
+            .as_ref()
+            .map(|document| format!(
+                " — ASSEMBLY {} scaffolds / {} superscaffolds",
+                document.scaffolds.len(),
+                document.superscaffolds.len()
+            ))
+            .unwrap_or_default()
+    );
+    eprintln!(
+        "loaded {} contacts at {} bp from {}; color range 0..{}",
+        records.len(),
+        zoom.bin_size,
+        hic_path.display(),
+        viewport.color_max
+    );
     let event_loop = EventLoop::new()?;
-    event_loop.run_app(&mut App::new(hic_path))?;
+    event_loop.run_app(&mut App::new(tile, title, viewport))?;
     Ok(())
+}
+
+fn load_sibling_assembly(hic_path: &std::path::Path) -> Result<Option<AssemblyDocument>> {
+    let assembly_path = hic_path.with_extension("assembly");
+    if !assembly_path.is_file() {
+        return Ok(None);
+    }
+    AssemblyDocument::open(&assembly_path)
+        .map(Some)
+        .with_context(|| format!("failed to load {}", assembly_path.display()))
 }

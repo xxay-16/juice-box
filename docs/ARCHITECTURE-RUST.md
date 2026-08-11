@@ -43,19 +43,26 @@ UI adapter
 - 框架无关的 `TileKey`、`IntensityTile` 与 `Viewport`；
 - `R32Float` wgpu 纹理；
 - GPU camera 平移、缩放与 shader 色阶映射；
-- 使用真实 `.hic` 元数据初始化窗口标题。
+- `.hic` v8/v9+ 的 Matrix metadata、Block index、zlib 解压和原始 contact records 读取；
+- 标准 `.assembly` scaffold/layout 文本的无 UI 解析、placement 坐标查询、反转/移动与 Undo/Redo 基础；
+- 标准 `.assembly` 的坐标映射、反转/移动和 Undo/Redo；
+- 使用真实 `.hic` 的 `1_1` BP contacts 构建 CPU 参考强度 Tile、导出 PNG，并上传到 GPU；
+- 逐分辨率比较 Java/Rust 的 Block 数、record 数、stored counts 总和与逐 record 指纹。
 
-当前 GPU 画面仍使用确定性的演示强度数据，不能视为真实 `.hic` 矩阵迁移完成。下一阶段必须实现 Matrix metadata、Block index、zlib 解压和 contact records，并与 Java 输出对照。
+真实 `genome.hic` v8 的 Reader Gate 已通过，CPU raw-observed/GPU 垂直切片也已跑通。这仍不是完整迁移：normalization、Observed/Control、Expected、Pearson、Assembly 变换接入热图、异步 Tile 调度/缓存和跨设备验收尚未完成，不能据此替换 Java 主程序。
 
 ## 构建与运行
 
 ```powershell
 cargo test --workspace
-cargo run -p hic-core --bin hic-info -- data/inter.hic
-cargo run -p heatmap-wgpu -- data/inter.hic
+cargo run -p hic-core --bin hic-info -- ..\data\genome.hic
+cargo run -p hic-core --bin hic-matrix-info -- ..\data\genome.hic 1_1
+cargo run -p assembly-core --bin assembly-info -- ..\data\genome.assembly
+cargo run -p heatmap-cpu --bin hic-render-png -- ..\data\genome.hic milestone-artifacts\genome-500kb.png 1_1 500000
+cargo run -p heatmap-wgpu -- ..\data\genome.hic 1_1 500000
 ```
 
-GPU 原型中按住左键拖动，滚轮缩放。
+最后一个命令会打开 GPU 原型，标题中应显示 `REAL HIC`、`1_1`、实际分辨率、contact 数和同名 Assembly 摘要。按住左键拖动，滚轮缩放；上下方向键或 `+/-` 调色，`R` 重置视图。
 
 ## 回滚
 
