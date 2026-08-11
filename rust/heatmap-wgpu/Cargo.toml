@@ -1,0 +1,15 @@
+[package]
+name = "heatmap-wgpu"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bytemuck.workspace = true
+heatmap-core = { path = "../heatmap-core" }
+hic-core = { path = "../hic-core" }
+pollster.workspace = true
+wgpu.workspace = true
+winit.workspace = true

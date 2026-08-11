@@ -5,3 +5,5 @@
 out/
 logs/
 .vscode
+target/
+*.profraw
