@@ -9,3 +9,5 @@ target/
 *.profraw
 milestone-artifacts/
 .omo/
+__artifacts_temp/
+dist/

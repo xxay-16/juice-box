@@ -34,12 +34,20 @@
 
 ## 阶段门
 
-1. Reader Gate：真实 `.hic` Header、Footer、Matrix 和 raw observed Block 结果对照通过。**`genome.hic` v8 已通过。**
-2. CPU Gate：raw observed 的 R32F Tile 与 PNG 参考导出已建立；其他矩阵语义尚未通过。
-3. GPU Gate：拖动、缩放、调色、显存预算和任务取消通过。
-4. Assembly Gate：编辑、版本化失效和 Undo/Redo 对照通过。
+1. Reader Gate：真实 `.hic` Header、Footer、Matrix、raw/normalized Block、normalization
+   vector、expected vector 和 O/E record 结果对照通过。**`genome.hic` v8 的 5 档
+   BP × NONE/KR/VC/VC_SQRT 已通过。**
+2. CPU Gate：raw observed 的 R32F Tile 与 PNG 参考导出已建立；Observed、dense Expected
+   和 O/E 栅格算法已有单测和逐 record Gate。Control/Pearson 仍未通过。
+3. GPU Gate：真实数据拖动、缩放、调色、256 MiB CPU Block 预算、generation 取消、
+   overscan 覆盖区零读取和动态 LOD已通过单机验证；显存预算、长时间运行和跨 GPU
+   验收仍待完成。
+4. Assembly Gate：顺序/方向映射、scaffold 翻转/移动、debris 提取、superscaffold
+   拆分/合并、版本化失效、Undo/Redo 和 modified assembly 保存回读已通过真实数据；
+   高级多选、phase 与全部 Java 操作对照仍待完成。
 5. UI Gate：通过上述门槛后再决定 Qt/QML、Slint、egui 或其他 UI。
-6. Release Gate：兼容、稳定性、portable 发布和长时间运行全部通过后，才考虑替换 Java 主程序。
+6. Release Gate：Windows 静态 CRT 单 EXE、图标、文件选择、本地日志和自动 CPU/软件
+   适配器回退已通过；兼容、跨设备和长时间运行全部通过后，才考虑替换 Java 主程序。
 
 ## 本地真实数据回归
 
@@ -51,6 +59,7 @@
 ```
 
 该检查会运行 Rust workspace 测试，并以 `1_1` 矩阵的每个 BP 分辨率比对
-Rust 与当前 Java Reader 的 Block 数、contact record 数、原始 counts 总和与逐 record 指纹；随后
-解析 assembly。它为 v8 assembly 输入提供 Reader Gate 的可重复证据，但不替代
-v9+、Observed/Control、normalization、CPU 像素或 Assembly 编辑的后续验收。
+Rust 与当前 Java Reader 的 Block/contact 指纹、NONE/KR/VC/VC_SQRT normalization
+vectors、expected vectors，以及每条 O/E record 的 float 指纹；随后解析 assembly。
+它为当前 v8 输入提供可重复证据，但不替代 v9+ 真实语料、Control/Pearson、跨 GPU、
+长时间运行或高级多选/phase Assembly 编辑验收。

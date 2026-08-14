@@ -19,6 +19,8 @@ bytemuck = { version = "1.25", features = ["derive"] }
 flate2 = "1.1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 pollster = "0.4"
+rfd = "0.15"
 thiserror = "2.0"
+winresource = "0.1"
 wgpu = "24.0"
 winit = "0.30.13"

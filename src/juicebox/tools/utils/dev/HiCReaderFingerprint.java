@@ -5,10 +5,12 @@ import juicebox.data.Block;
 import juicebox.data.ContactRecord;
 import juicebox.data.Dataset;
 import juicebox.data.DatasetReaderV2;
+import juicebox.data.ExpectedValueFunction;
 import juicebox.data.Matrix;
 import juicebox.data.MatrixZoomData;
 import juicebox.windowui.HiCZoom;
 import juicebox.windowui.NormalizationHandler;
+import juicebox.windowui.NormalizationType;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -33,27 +35,66 @@ public final class HiCReaderFingerprint {
         if (matrix == null) {
             throw new IllegalArgumentException("missing matrix " + key);
         }
-        for (HiCZoom zoom : dataset.getBpZooms()) {
-            MatrixZoomData zoomData = matrix.getZoomData(zoom);
-            if (zoomData == null) continue;
-            List<Integer> blockNumbers = new ArrayList<>(zoomData.getBlockNumbers());
-            Collections.sort(blockNumbers);
-            long records = 0;
-            double storedCountSum = 0;
-            long fingerprint = FNV_OFFSET;
-            for (int blockNumber : blockNumbers) {
-                Block block = reader.readNormalizedBlock(blockNumber, zoomData, NormalizationHandler.NONE);
-                for (ContactRecord record : block.getContactRecords()) {
-                    records++;
-                    storedCountSum += record.getCounts();
-                    fingerprint = update(fingerprint, record.getBinX());
-                    fingerprint = update(fingerprint, record.getBinY());
-                    fingerprint = update(fingerprint, Float.floatToRawIntBits(record.getCounts()));
+        List<NormalizationType> normalizations = List.of(
+                NormalizationHandler.NONE, NormalizationHandler.KR,
+                NormalizationHandler.VC, NormalizationHandler.VC_SQRT);
+        for (NormalizationType normalization : normalizations) {
+            for (HiCZoom zoom : dataset.getBpZooms()) {
+                MatrixZoomData zoomData = matrix.getZoomData(zoom);
+                if (zoomData == null) continue;
+                List<Integer> blockNumbers = new ArrayList<>(zoomData.getBlockNumbers());
+                Collections.sort(blockNumbers);
+                long records = 0;
+                long finite = 0;
+                double storedCountSum = 0;
+                long fingerprint = FNV_OFFSET;
+                for (int blockNumber : blockNumbers) {
+                    Block block = reader.readNormalizedBlock(blockNumber, zoomData, normalization);
+                    if (block == null) continue;
+                    for (ContactRecord record : block.getContactRecords()) {
+                        records++;
+                        if (Float.isFinite(record.getCounts())) {
+                            finite++;
+                            storedCountSum += record.getCounts();
+                        }
+                        fingerprint = update(fingerprint, record.getBinX());
+                        fingerprint = update(fingerprint, record.getBinY());
+                        fingerprint = update(fingerprint, Float.floatToRawIntBits(record.getCounts()));
+                    }
+                }
+                System.out.printf(
+                        "norm=%s unit=%s bin_size=%d blocks=%d records=%d finite=%d stored_count_sum=%.9f fingerprint=%016x%n",
+                        normalization, HiC.Unit.BP, zoom.getBinSize(), blockNumbers.size(), records, finite, storedCountSum, fingerprint);
+
+                ExpectedValueFunction expected = dataset.getExpectedValues(zoom, normalization);
+                if (expected != null) {
+                    long oeRecords = 0;
+                    long oeFinite = 0;
+                    double oeSum = 0;
+                    long oeFingerprint = FNV_OFFSET;
+                    for (int blockNumber : blockNumbers) {
+                        Block block = reader.readNormalizedBlock(blockNumber, zoomData, normalization);
+                        if (block == null) continue;
+                        for (ContactRecord record : block.getContactRecords()) {
+                            int distance = Math.abs(record.getBinX() - record.getBinY());
+                            float ratio = (float) (record.getCounts()
+                                    / expected.getExpectedValue(zoomData.getChr1Idx(), distance));
+                            if (Float.isNaN(ratio)) continue;
+                            oeRecords++;
+                            if (Float.isFinite(ratio)) {
+                                oeFinite++;
+                                oeSum += ratio;
+                            }
+                            oeFingerprint = update(oeFingerprint, record.getBinX());
+                            oeFingerprint = update(oeFingerprint, record.getBinY());
+                            oeFingerprint = update(oeFingerprint, Float.floatToRawIntBits(ratio));
+                        }
+                    }
+                    System.out.printf(
+                            "oe_norm=%s unit=%s bin_size=%d records=%d finite=%d sum=%.9f fingerprint=%016x%n",
+                            normalization, HiC.Unit.BP, zoom.getBinSize(), oeRecords, oeFinite, oeSum, oeFingerprint);
                 }
             }
-            System.out.printf(
-                    "unit=%s bin_size=%d blocks=%d records=%d stored_count_sum=%.9f fingerprint=%016x%n",
-                    HiC.Unit.BP, zoom.getBinSize(), blockNumbers.size(), records, storedCountSum, fingerprint);
         }
     }
 
