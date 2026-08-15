@@ -903,14 +903,14 @@ impl App {
             self.selected_scaffold = Some(target);
             self.debris_anchor = None;
             window.set_title(&format!(
-                "{} — selected scaffold {}{}",
+                "{} — selected scaffold {}{}; right-click another scaffold to insert before it",
                 self.base_title,
                 target.scaffold_id,
                 if target.reversed { " (reversed)" } else { "" }
             ));
             window.request_redraw();
             app_log!(
-                "assembly selected: scaffold={} superscaffold={} index={} reversed={}",
+                "assembly selected: scaffold={} superscaffold={} index={} reversed={} — right-click another scaffold to insert before it",
                 target.scaffold_id,
                 target.superscaffold_index,
                 target.scaffold_index,
