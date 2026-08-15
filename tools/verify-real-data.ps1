@@ -188,4 +188,8 @@ foreach ($key in $javaPearsonRows.Keys) {
 
 cargo run -q -p assembly-core --bin assembly-info -- $AssemblyFile
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$env:JUICEBOX_REAL_HIC = [System.IO.Path]::GetFullPath($HicFile)
+cargo test -q -p heatmap-wgpu real_same_file_control_modes_match_observed_raw_bits -- --ignored
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+Write-Output "Control identity match: Observed/Control, O/E/Control-Expected, Pearson/Control-Pearson"
 Write-Output "Real-data verification passed."

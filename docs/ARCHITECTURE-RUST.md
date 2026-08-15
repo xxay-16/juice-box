@@ -54,14 +54,16 @@ UI adapter
 - Assembly source/current 双向坐标索引，顺序和方向真实接入 Block 查询与栅格化；
 - scaffold 选择、翻转、移动、Undo/Redo 和 modified assembly 保存；
 - 无 JDK、静态 CRT 的 Windows portable 单 EXE。
-- Observed / dense Expected / O/E / Pearson MatrixType，`N` 切换 normalization，`M` 切换模式；
+- Observed / dense Expected / O/E / Pearson，以及直接 Control / Control-OE / Control-Pearson MatrixType；observed 与 control normalization 和缓存彼此独立；
 - visible Block 并行解压后逐块栅格化和上传，进入视口的新区域无需等待全部 Block；
 - 真实 v8 数据的 raw/normalized Block、normalization vector、expected vector 和 O/E
   逐 record Java/Rust 指纹 Gate。
 
 真实 `genome.hic` v8 的 Reader Gate 已通过，CPU raw-observed、normalization、
 Observed/Expected/OE、动态 GPU viewport 和基础 Assembly 编辑垂直切片也已跑通。
-这仍不是完整迁移：Control、旧 session、高级 Assembly 多选/phase 工具和
+Control 双数据源现已建立独立 reader、Block/normalization/expected/Pearson cache，并接入
+Control、Control/ExpectedC 和 Control Pearson。Observed-vs-Control 与 ratio/difference
+仍未实现，因此这仍不是完整迁移：旧 session、高级 Assembly 多选/phase 工具和
 跨设备验收尚未完成，不能据此替换 Java 主程序。GPU 初始化失败时已自动尝试软件/CPU
 适配器，并提供 `JUICEBOX_FORCE_CPU=1` 验收开关。
 
@@ -73,13 +75,15 @@ cargo run -p hic-core --bin hic-info -- ..\data\genome.hic
 cargo run -p hic-core --bin hic-matrix-info -- ..\data\genome.hic 1_1
 cargo run -p assembly-core --bin assembly-info -- ..\data\genome.assembly
 cargo run -p heatmap-cpu --bin hic-render-png -- ..\data\genome.hic milestone-artifacts\genome-500kb.png 1_1 500000
-cargo run -p heatmap-wgpu -- ..\data\genome.hic 1_1 ..\data\genome.assembly
+cargo run -p heatmap-wgpu -- ..\data\genome.hic 1_1 ..\data\genome.assembly [control.hic]
 ```
 
 最后一个命令会打开 GPU 原型。左键拖动、滚轮缩放；`+/-` 调色，`A` 恢复
 自动色阶，`R` 重置视图。右键选择 scaffold，`I` 翻转，Shift+右键移动到目标
 前，Ctrl+Z/Y 撤销重做，Ctrl+S 保存 modified assembly。`N` 切换 normalization，
-`M` 切换 Observed / Expected / O/E / Pearson。
+不传 control 文件时，`M` 切换 Observed / Expected / O/E / Pearson。传入第四个位置参数
+`control.hic` 后，会额外提供 Control / Control-Expected / Control-Pearson；`N` 只切换当前
+observed 或 control 数据源的 normalization。
 
 Windows portable 构建：
 

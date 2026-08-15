@@ -21,7 +21,7 @@ use hic_core::{
     NormalizationKey,
 };
 
-const OUTPUT_SIZE: u32 = 1024;
+pub(crate) const OUTPUT_SIZE: u32 = 1024;
 const PREFETCH_BLOCK_RINGS: i32 = 2;
 const BLOCK_CACHE_BUDGET_BYTES: usize = 256 * 1024 * 1024;
 const VIEW_OVERSCAN_FACTOR: f64 = 1.5;
@@ -40,7 +40,8 @@ pub struct TileRequest {
     pub viewport: GenomeViewport,
     pub assembly_map: Option<Arc<AssemblyCoordinateMap>>,
     pub assembly_version: u64,
-    pub normalization: Normalization,
+    pub observed_normalization: Normalization,
+    pub control_normalization: Normalization,
     pub matrix_type: MatrixType,
 }
 
@@ -78,6 +79,9 @@ pub enum MatrixType {
     Expected,
     ObservedOverExpected,
     Pearson,
+    Control,
+    ControlOverExpected,
+    ControlPearson,
 }
 
 impl MatrixType {
@@ -87,16 +91,45 @@ impl MatrixType {
             Self::Expected => "Expected",
             Self::ObservedOverExpected => "O/E",
             Self::Pearson => "Pearson",
+            Self::Control => "Control",
+            Self::ControlOverExpected => "Control/ExpectedC",
+            Self::ControlPearson => "Control Pearson",
         }
     }
 
-    pub fn next(self) -> Self {
-        match self {
-            Self::Observed => Self::Expected,
-            Self::Expected => Self::ObservedOverExpected,
-            Self::ObservedOverExpected => Self::Pearson,
-            Self::Pearson => Self::Observed,
+    pub fn next(self, control_available: bool) -> Self {
+        if !control_available {
+            return match self {
+                Self::Observed => Self::Expected,
+                Self::Expected => Self::ObservedOverExpected,
+                Self::ObservedOverExpected => Self::Pearson,
+                _ => Self::Observed,
+            };
         }
+        match self {
+            Self::Observed => Self::Control,
+            Self::Control => Self::Expected,
+            Self::Expected => Self::ObservedOverExpected,
+            Self::ObservedOverExpected => Self::ControlOverExpected,
+            Self::ControlOverExpected => Self::Pearson,
+            Self::Pearson => Self::ControlPearson,
+            Self::ControlPearson => Self::Observed,
+        }
+    }
+
+    pub fn uses_control(self) -> bool {
+        matches!(
+            self,
+            Self::Control | Self::ControlOverExpected | Self::ControlPearson
+        )
+    }
+
+    fn is_pearson(self) -> bool {
+        matches!(self, Self::Pearson | Self::ControlPearson)
+    }
+
+    fn is_observed(self) -> bool {
+        matches!(self, Self::Observed | Self::Control)
     }
 }
 
@@ -130,7 +163,8 @@ pub struct TileEngine {
     latest_generation: Arc<AtomicU64>,
     assembly_map: Arc<Mutex<Option<Arc<AssemblyCoordinateMap>>>>,
     assembly_version: Arc<AtomicU64>,
-    normalization: Arc<Mutex<Normalization>>,
+    observed_normalization: Arc<Mutex<Normalization>>,
+    control_normalization: Arc<Mutex<Normalization>>,
     matrix_type: Arc<Mutex<MatrixType>>,
     results: Receiver<Result<TileResult, String>>,
 }
@@ -140,16 +174,23 @@ impl TileEngine {
         path: PathBuf,
         matrix_key: String,
         assembly_map: Option<AssemblyCoordinateMap>,
+        control_path: Option<PathBuf>,
     ) -> Result<Self> {
         // Fail fast on metadata errors before starting the worker.
         let file = HicFile::open(&path)?;
-        file.read_matrix(&matrix_key)?;
+        let matrix = file.read_matrix(&matrix_key)?;
+        if let Some(control_path) = &control_path {
+            let control_file = HicFile::open(control_path)?;
+            let control_matrix = control_file.read_matrix(&matrix_key)?;
+            validate_control_compatibility(&file, &matrix, &control_file, &control_matrix)?;
+        }
 
         let request = Arc::new((Mutex::new(None), Condvar::new()));
         let latest_generation = Arc::new(AtomicU64::new(0));
         let assembly_map = Arc::new(Mutex::new(assembly_map.map(Arc::new)));
         let assembly_version = Arc::new(AtomicU64::new(0));
-        let normalization = Arc::new(Mutex::new(Normalization::None));
+        let observed_normalization = Arc::new(Mutex::new(Normalization::None));
+        let control_normalization = Arc::new(Mutex::new(Normalization::None));
         let matrix_type = Arc::new(Mutex::new(MatrixType::Observed));
         let (sender, results) = mpsc::channel();
         let worker_request = Arc::clone(&request);
@@ -157,9 +198,14 @@ impl TileEngine {
         thread::Builder::new()
             .name("hic-tile-worker".to_owned())
             .spawn(move || {
-                if let Err(error) =
-                    worker_loop(path, matrix_key, worker_request, worker_generation, sender)
-                {
+                if let Err(error) = worker_loop(
+                    path,
+                    control_path,
+                    matrix_key,
+                    worker_request,
+                    worker_generation,
+                    sender,
+                ) {
                     app_log!("tile worker stopped: {error:#}");
                 }
             })?;
@@ -168,7 +214,8 @@ impl TileEngine {
             latest_generation,
             assembly_map,
             assembly_version,
-            normalization,
+            observed_normalization,
+            control_normalization,
             matrix_type,
             results,
         })
@@ -187,10 +234,14 @@ impl TileEngine {
             viewport,
             assembly_map,
             assembly_version: self.assembly_version.load(Ordering::Acquire),
-            normalization: *self
-                .normalization
+            observed_normalization: *self
+                .observed_normalization
                 .lock()
-                .expect("normalization mutex poisoned"),
+                .expect("observed normalization mutex poisoned"),
+            control_normalization: *self
+                .control_normalization
+                .lock()
+                .expect("control normalization mutex poisoned"),
             matrix_type: *self.matrix_type.lock().expect("matrix type mutex poisoned"),
         });
         changed.notify_one();
@@ -206,9 +257,16 @@ impl TileEngine {
 
     pub fn update_normalization(&self, normalization: Normalization) {
         *self
-            .normalization
+            .observed_normalization
             .lock()
-            .expect("normalization mutex poisoned") = normalization;
+            .expect("observed normalization mutex poisoned") = normalization;
+    }
+
+    pub fn update_control_normalization(&self, normalization: Normalization) {
+        *self
+            .control_normalization
+            .lock()
+            .expect("control normalization mutex poisoned") = normalization;
     }
 
     pub fn update_matrix_type(&self, matrix_type: MatrixType) {
@@ -222,6 +280,7 @@ impl TileEngine {
 
 fn worker_loop(
     path: PathBuf,
+    control_path: Option<PathBuf>,
     matrix_key: String,
     request: Arc<(Mutex<Option<TileRequest>>, Condvar)>,
     latest_generation: Arc<AtomicU64>,
@@ -229,12 +288,16 @@ fn worker_loop(
 ) -> Result<()> {
     let file = HicFile::open(&path)?;
     let matrix = file.read_matrix(&matrix_key)?;
-    let symmetric = matrix.chromosome_1 == matrix.chromosome_2;
-    let mut cache = BlockCache::new(BLOCK_CACHE_BUDGET_BYTES);
-    let mut normalization_cache: HashMap<(Normalization, u32, u32), Arc<Vec<f64>>> = HashMap::new();
-    let mut expected_cache: HashMap<(Normalization, u32), Arc<ExpectedValueVector>> =
-        HashMap::new();
-    let mut pearson_cache = PearsonCache::default();
+    let control = control_path
+        .map(|path| -> Result<_> {
+            let control_file = HicFile::open(path)?;
+            let control_matrix = control_file.read_matrix(&matrix_key)?;
+            validate_control_compatibility(&file, &matrix, &control_file, &control_matrix)?;
+            Ok((control_file, control_matrix))
+        })
+        .transpose()?;
+    let mut observed_state = DatasetWorkerState::new();
+    let mut control_state = DatasetWorkerState::new();
 
     loop {
         let next = {
@@ -249,28 +312,38 @@ fn worker_loop(
         };
 
         let request_assembly_map = next.assembly_map.clone();
+        let use_control = next.matrix_type.uses_control();
+        let (active_file, active_matrix, state) = if use_control {
+            let (control_file, control_matrix) = control
+                .as_ref()
+                .context("selected MatrixType requires a control .hic dataset")?;
+            (control_file, control_matrix, &mut control_state)
+        } else {
+            (&file, &matrix, &mut observed_state)
+        };
+        let symmetric = active_matrix.chromosome_1 == active_matrix.chromosome_2;
         match build_tile_streaming(
-            &file,
-            &matrix,
+            active_file,
+            active_matrix,
             symmetric,
             next,
             &latest_generation,
-            &mut cache,
-            &mut normalization_cache,
-            &mut expected_cache,
-            &mut pearson_cache,
+            &mut state.block_cache,
+            &mut state.normalization_cache,
+            &mut state.expected_cache,
+            &mut state.pearson_cache,
             &sender,
         ) {
             Ok(Some(completed_viewport)) => {
                 prefetch_viewport(
-                    &file,
-                    &matrix,
+                    active_file,
+                    active_matrix,
                     symmetric,
                     request_assembly_map.as_deref(),
                     completed_viewport,
                     &latest_generation,
                     &request,
-                    &mut cache,
+                    &mut state.block_cache,
                 )?;
             }
             Ok(None) => {} // Superseded by a newer generation.
@@ -302,7 +375,12 @@ fn build_tile_streaming(
     let started = Instant::now();
     let generation = request.viewport.generation;
     let assembly_map = request.assembly_map.as_deref();
-    let zoom = if request.matrix_type == MatrixType::Pearson {
+    let normalization = if request.matrix_type.uses_control() {
+        request.control_normalization
+    } else {
+        request.observed_normalization
+    };
+    let zoom = if request.matrix_type.is_pearson() {
         choose_pearson_zoom(
             matrix,
             request.viewport.span_bp / f64::from(OUTPUT_SIZE),
@@ -318,13 +396,16 @@ fn build_tile_streaming(
     // retain Java's normalized-contact calculation before rasterization.
     let normalization_vector = matches!(
         request.matrix_type,
-        MatrixType::Observed | MatrixType::ObservedOverExpected
+        MatrixType::Observed
+            | MatrixType::ObservedOverExpected
+            | MatrixType::Control
+            | MatrixType::ControlOverExpected
     )
     .then(|| {
         normalization_vector(
             file,
             matrix.chromosome_1,
-            request.normalization,
+            normalization,
             normalization_cache,
             request.viewport.span_bp / f64::from(OUTPUT_SIZE),
             matrix,
@@ -332,17 +413,17 @@ fn build_tile_streaming(
     })
     .transpose()?
     .flatten();
-    let expected_vector = (request.matrix_type != MatrixType::Observed)
-        .then(|| expected_vector(file, request.normalization, zoom.bin_size, expected_cache))
+    let expected_vector = (!request.matrix_type.is_observed())
+        .then(|| expected_vector(file, normalization, zoom.bin_size, expected_cache))
         .transpose()?;
     let rendered_viewport = rendered_viewport_for(request.viewport);
     let bin_bounds = viewport_bin_bounds(rendered_viewport, zoom.bin_size);
-    if request.matrix_type == MatrixType::Pearson {
+    if request.matrix_type.is_pearson() {
         let pearson = pearson_matrix(
             file,
             matrix,
             zoom,
-            request.normalization,
+            normalization,
             expected_vector
                 .as_deref()
                 .context("Pearson expected values are unavailable")?,
@@ -547,18 +628,23 @@ fn send_stream_result(
     dirty_rect: Option<[u32; 4]>,
     started: Instant,
 ) -> Result<()> {
+    let normalization = if request.matrix_type.uses_control() {
+        request.control_normalization
+    } else {
+        request.observed_normalization
+    };
     // Keep the scientific matrix values in the R32F texture. MatrixType
     // transforms (normalization and O/E) belong above, while display-only
     // scaling belongs in the shader/color range. Applying ln(1+x) here made
     // Observed, Expected, and O/E numerically different from Java.
-    let color_max = if request.matrix_type == MatrixType::Pearson {
+    let color_max = if request.matrix_type.is_pearson() {
         1.0
     } else if complete {
         let full = IntensityTile::new(
             TileKey {
                 dataset: 1,
                 matrix_type: matrix_type_id(request.matrix_type),
-                normalization: normalization_id(request.normalization),
+                normalization: normalization_id(normalization),
                 assembly_version: request.assembly_version,
                 resolution,
                 x: 0,
@@ -588,7 +674,7 @@ fn send_stream_result(
         TileKey {
             dataset: 1,
             matrix_type: matrix_type_id(request.matrix_type),
-            normalization: normalization_id(request.normalization),
+            normalization: normalization_id(normalization),
             assembly_version: request.assembly_version,
             resolution,
             x: 0,
@@ -602,7 +688,7 @@ fn send_stream_result(
         .send(Ok(TileResult {
             viewport,
             assembly_version: request.assembly_version,
-            normalization: request.normalization,
+            normalization,
             matrix_type: request.matrix_type,
             resolution,
             color_max,
@@ -654,20 +740,24 @@ fn accumulate_block(
             let normalized = normalize_contact(record, normalization_vector)?;
             let (bin_x, bin_y, counts) = map_contact(&normalized, zoom.bin_size, assembly_map)?;
             let counts = match matrix_type {
-                MatrixType::Observed => counts,
-                MatrixType::ObservedOverExpected => observed_over_expected(
-                    ContactRecord {
+                MatrixType::Observed | MatrixType::Control => counts,
+                MatrixType::ObservedOverExpected | MatrixType::ControlOverExpected => {
+                    observed_over_expected(
+                        ContactRecord {
+                            bin_x,
+                            bin_y,
+                            counts,
+                        },
+                        expected_vector?,
+                        chromosome,
                         bin_x,
                         bin_y,
-                        counts,
-                    },
-                    expected_vector?,
-                    chromosome,
-                    bin_x,
-                    bin_y,
-                )?,
+                    )?
+                }
                 MatrixType::Expected => unreachable!("expected tiles do not read sparse contacts"),
-                MatrixType::Pearson => unreachable!("Pearson tiles use the dense matrix path"),
+                MatrixType::Pearson | MatrixType::ControlPearson => {
+                    unreachable!("Pearson tiles use the dense matrix path")
+                }
             };
             Some((bin_x, bin_y, counts))
         }),
@@ -712,6 +802,9 @@ fn matrix_type_id(matrix_type: MatrixType) -> u32 {
         MatrixType::Expected => 1,
         MatrixType::ObservedOverExpected => 2,
         MatrixType::Pearson => 3,
+        MatrixType::Control => 4,
+        MatrixType::ControlOverExpected => 5,
+        MatrixType::ControlPearson => 6,
     }
 }
 
@@ -1236,6 +1329,81 @@ fn is_stale(latest_generation: &AtomicU64, generation: u64) -> bool {
     latest_generation.load(Ordering::Acquire) != generation
 }
 
+fn validate_control_compatibility(
+    observed_file: &HicFile,
+    observed_matrix: &Matrix,
+    control_file: &HicFile,
+    control_matrix: &Matrix,
+) -> Result<()> {
+    let observed_chr_1 = observed_file
+        .header
+        .chromosomes
+        .get(observed_matrix.chromosome_1 as usize)
+        .context("observed matrix chromosome 1 is outside the header dictionary")?;
+    let observed_chr_2 = observed_file
+        .header
+        .chromosomes
+        .get(observed_matrix.chromosome_2 as usize)
+        .context("observed matrix chromosome 2 is outside the header dictionary")?;
+    let control_chr_1 = control_file
+        .header
+        .chromosomes
+        .get(control_matrix.chromosome_1 as usize)
+        .context("control matrix chromosome 1 is outside the header dictionary")?;
+    let control_chr_2 = control_file
+        .header
+        .chromosomes
+        .get(control_matrix.chromosome_2 as usize)
+        .context("control matrix chromosome 2 is outside the header dictionary")?;
+    if (observed_chr_1.name.as_str(), observed_chr_1.length)
+        != (control_chr_1.name.as_str(), control_chr_1.length)
+        || (observed_chr_2.name.as_str(), observed_chr_2.length)
+            != (control_chr_2.name.as_str(), control_chr_2.length)
+    {
+        anyhow::bail!(
+            "control matrix chromosomes do not match observed: {}({}) x {}({}) versus {}({}) x {}({})",
+            observed_chr_1.name,
+            observed_chr_1.length,
+            observed_chr_2.name,
+            observed_chr_2.length,
+            control_chr_1.name,
+            control_chr_1.length,
+            control_chr_2.name,
+            control_chr_2.length
+        );
+    }
+    let observed_resolutions: HashSet<u32> = observed_matrix
+        .zooms
+        .iter()
+        .filter(|zoom| zoom.unit == MatrixUnit::BasePairs)
+        .map(|zoom| zoom.bin_size)
+        .collect();
+    if !control_matrix.zooms.iter().any(|zoom| {
+        zoom.unit == MatrixUnit::BasePairs && observed_resolutions.contains(&zoom.bin_size)
+    }) {
+        anyhow::bail!("control matrix has no base-pair resolution shared with observed");
+    }
+    Ok(())
+}
+
+struct DatasetWorkerState {
+    block_cache: BlockCache,
+    normalization_cache: HashMap<(Normalization, u32, u32), Arc<Vec<f64>>>,
+    expected_cache: HashMap<(Normalization, u32), Arc<ExpectedValueVector>>,
+    pearson_cache: PearsonCache,
+}
+
+impl DatasetWorkerState {
+    fn new() -> Self {
+        Self {
+            block_cache: BlockCache::new(BLOCK_CACHE_BUDGET_BYTES),
+            normalization_cache: HashMap::new(),
+            expected_cache: HashMap::new(),
+            pearson_cache: PearsonCache::default(),
+        }
+    }
+}
+
 #[derive(Default)]
 struct PearsonCache {
     entry: Option<((Normalization, u32), Arc<PearsonMatrix>)>,
@@ -1680,5 +1848,45 @@ mod tests {
         assert_eq!(cache.len(), 1);
         assert!(cache.get(first_key).is_none());
         assert_eq!(cache.get(second_key).unwrap().values, vec![2.0]);
+    }
+
+    #[test]
+    fn matrix_type_cycle_exposes_control_only_when_a_dataset_is_loaded() {
+        let mut without_control = MatrixType::Observed;
+        let mut observed_cycle = Vec::new();
+        for _ in 0..4 {
+            observed_cycle.push(without_control);
+            without_control = without_control.next(false);
+        }
+        assert_eq!(
+            observed_cycle,
+            vec![
+                MatrixType::Observed,
+                MatrixType::Expected,
+                MatrixType::ObservedOverExpected,
+                MatrixType::Pearson,
+            ]
+        );
+        assert_eq!(without_control, MatrixType::Observed);
+
+        let mut with_control = MatrixType::Observed;
+        let mut control_cycle = Vec::new();
+        for _ in 0..7 {
+            control_cycle.push(with_control);
+            with_control = with_control.next(true);
+        }
+        assert_eq!(
+            control_cycle,
+            vec![
+                MatrixType::Observed,
+                MatrixType::Control,
+                MatrixType::Expected,
+                MatrixType::ObservedOverExpected,
+                MatrixType::ControlOverExpected,
+                MatrixType::Pearson,
+                MatrixType::ControlPearson,
+            ]
+        );
+        assert_eq!(with_control, MatrixType::Observed);
     }
 }

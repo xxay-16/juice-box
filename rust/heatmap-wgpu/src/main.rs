@@ -35,6 +35,7 @@ use winit::{
 
 const INITIAL_SPAN_FRACTION: f64 = 0.42;
 const INTERACTION_REFRESH_MS: u64 = 16;
+const INTERACTION_SETTLE_MS: u64 = 48;
 const MIN_DISPLAYED_TEXTURE_SCALE: f64 = 0.45;
 const REFRESH_EDGE_MARGIN_FRACTION: f64 = 0.12;
 
@@ -504,7 +505,14 @@ struct App {
     gpu: Option<GpuState>,
     engine: TileEngine,
     requested_viewport: GenomeViewport,
+    /// Coordinates represented by the texture currently sampled by the GPU.
+    /// This advances for every streamed Block so the just-arrived pixels are
+    /// drawn in their correct genomic position.
     displayed_viewport: GenomeViewport,
+    /// The newest viewport whose texture has received every required Block.
+    /// Keep this separate from `displayed_viewport`: a streamed first Block is
+    /// drawable, but does not yet prove that a later pan is covered.
+    completed_viewport: GenomeViewport,
     initial_tile: Option<IntensityTile>,
     color_range: [f32; 2],
     auto_color_range: bool,
@@ -515,7 +523,9 @@ struct App {
     base_title: String,
     request_pending: bool,
     in_flight_viewport: Option<GenomeViewport>,
+    last_submitted_generation: u64,
     last_request_at: Instant,
+    last_view_change_at: Instant,
     assembly_editor: Option<AssemblyEditor>,
     assembly_path: Option<PathBuf>,
     selected_scaffold: Option<AssemblyPlacement>,
@@ -523,7 +533,9 @@ struct App {
     modifiers: winit::keyboard::ModifiersState,
     assembly_version: u64,
     normalization: Normalization,
+    control_normalization: Normalization,
     matrix_type: MatrixType,
+    control_available: bool,
 }
 
 impl App {
@@ -534,6 +546,7 @@ impl App {
         base_title: String,
         assembly: Option<AssemblyDocument>,
         assembly_path: Option<PathBuf>,
+        control_available: bool,
     ) -> Self {
         Self {
             window: None,
@@ -541,6 +554,7 @@ impl App {
             engine,
             requested_viewport: viewport,
             displayed_viewport: initial.viewport,
+            completed_viewport: initial.viewport,
             initial_tile: Some(initial.tile),
             color_range: [0.0, initial.color_max],
             auto_color_range: true,
@@ -551,7 +565,9 @@ impl App {
             base_title,
             request_pending: false,
             in_flight_viewport: None,
+            last_submitted_generation: viewport.generation,
             last_request_at: Instant::now(),
+            last_view_change_at: Instant::now(),
             assembly_editor: assembly.map(AssemblyEditor::new),
             assembly_path,
             selected_scaffold: None,
@@ -559,7 +575,9 @@ impl App {
             modifiers: winit::keyboard::ModifiersState::empty(),
             assembly_version: initial.assembly_version,
             normalization: initial.normalization,
+            control_normalization: Normalization::None,
             matrix_type: initial.matrix_type,
+            control_available,
         }
     }
 
@@ -573,12 +591,43 @@ impl App {
         );
         self.engine.request(self.requested_viewport);
         self.in_flight_viewport = Some(rendered_viewport_for(self.requested_viewport));
+        self.last_submitted_generation = self.requested_viewport.generation;
         self.request_pending = false;
         self.last_request_at = Instant::now();
     }
 
+    fn active_normalization(&self) -> Normalization {
+        if self.matrix_type.uses_control() {
+            self.control_normalization
+        } else {
+            self.normalization
+        }
+    }
+
     fn schedule_request(&mut self) {
-        if !viewport_needs_refresh(self.requested_viewport, self.displayed_viewport) {
+        // Overscan keeps the picture continuous while a drag is under way,
+        // but it must not turn into a reason to stop asking the worker for
+        // data.  Previously a small pan remained inside the old 1.5x texture
+        // (and its edge reserve), so no request was ever submitted for the
+        // position now under the cursor.  The view could therefore appear to
+        // move over a frozen matrix and the two prefetch rings were never
+        // warmed for the newly exposed direction.
+        //
+        // A TileEngine has a single latest-request slot: submitting here does
+        // not build a backlog.  Coalescing at INTERACTION_REFRESH_MS gives the
+        // worker the current viewport at most once per 16 ms while preserving
+        // the old texture until the first streamed result can replace it.
+        if should_submit_interaction_viewport(
+            self.requested_viewport,
+            self.last_submitted_generation,
+        ) {
+            self.request_pending = true;
+            if self.last_request_at.elapsed() >= Duration::from_millis(INTERACTION_REFRESH_MS) {
+                self.request_current();
+            }
+            return;
+        }
+        if !viewport_needs_refresh(self.requested_viewport, self.completed_viewport) {
             self.request_pending = false;
             return;
         }
@@ -614,7 +663,7 @@ impl App {
             .is_some_and(|viewport| viewport.generation == self.requested_viewport.generation);
         if should_request_settled_viewport(
             self.requested_viewport,
-            self.displayed_viewport,
+            self.completed_viewport,
             self.in_flight_viewport,
             self.request_pending,
         ) {
@@ -628,6 +677,30 @@ impl App {
         }
     }
 
+    /// Submit the most recent interaction position after pointer input has
+    /// paused briefly.  Winit normally delivers a left-button release, but a
+    /// release outside the window or an aggressively coalesced event stream
+    /// must not leave the final viewport served only by an older overscan
+    /// prediction.  Re-centering the worker here also warms the two prefetch
+    /// rings around the place where the user actually stopped.
+    fn request_idle_viewport(&mut self) {
+        if self.last_view_change_at.elapsed() < Duration::from_millis(INTERACTION_SETTLE_MS)
+            || !should_request_idle_viewport(
+                self.requested_viewport,
+                self.completed_viewport,
+                self.last_submitted_generation,
+            )
+        {
+            return;
+        }
+        app_log!(
+            "tile idle settle requested: generation={} completed={}",
+            self.requested_viewport.generation,
+            self.completed_viewport.generation
+        );
+        self.request_current();
+    }
+
     fn consume_results(&mut self, window: &Window) {
         while let Some(result) = self.engine.try_result() {
             match result {
@@ -635,7 +708,7 @@ impl App {
                     if result.viewport.generation >= self.displayed_viewport.generation
                         && result.viewport.generation <= self.requested_viewport.generation
                         && result.assembly_version == self.assembly_version
-                        && result.normalization == self.normalization
+                        && result.normalization == self.active_normalization()
                         && result.matrix_type == self.matrix_type =>
                 {
                     // Streaming results share a generation.  Keep the
@@ -657,6 +730,7 @@ impl App {
                     // Avoid visible colour-scale pulsing while individual
                     // Blocks progressively fill this same viewport.
                     if result.complete {
+                        self.completed_viewport = result.viewport;
                         self.latest_auto_color_max = result.color_max;
                         if self.auto_color_range {
                             self.color_range[1] = result.color_max;
@@ -720,12 +794,12 @@ impl App {
                     // the display, no new pointer event is required to reveal
                     // the stale state, so uncovered portions can remain dark.
                     if result.complete
-                        && viewport_needs_refresh(self.requested_viewport, self.displayed_viewport)
+                        && viewport_needs_refresh(self.requested_viewport, self.completed_viewport)
                     {
                         app_log!(
                             "tile follow-up queued: requested generation={} is outside completed generation={} coverage",
                             self.requested_viewport.generation,
-                            self.displayed_viewport.generation
+                            self.completed_viewport.generation
                         );
                         self.schedule_request();
                     }
@@ -968,6 +1042,7 @@ impl ApplicationHandler for App {
         {
             self.request_current();
         }
+        self.request_idle_viewport();
         window.request_redraw();
         event_loop.set_control_flow(ControlFlow::WaitUntil(
             Instant::now() + Duration::from_millis(INTERACTION_REFRESH_MS),
@@ -1034,6 +1109,7 @@ impl ApplicationHandler for App {
                             -(position.x - previous.x) / side,
                             -(position.y - previous.y) / side,
                         ]);
+                        self.last_view_change_at = Instant::now();
                         self.schedule_request();
                         window.request_redraw();
                     }
@@ -1048,6 +1124,7 @@ impl ApplicationHandler for App {
                 let anchor = cursor_in_square(self.cursor, window.inner_size());
                 self.requested_viewport
                     .zoom_at(1.18_f64.powf(amount), anchor);
+                self.last_view_change_at = Instant::now();
                 self.schedule_request();
                 window.request_redraw();
             }
@@ -1070,15 +1147,29 @@ impl ApplicationHandler for App {
                         self.request_current();
                     }
                     PhysicalKey::Code(KeyCode::KeyN) => {
-                        self.normalization = self.normalization.next();
-                        self.engine.update_normalization(self.normalization);
+                        if self.matrix_type.uses_control() {
+                            self.control_normalization = self.control_normalization.next();
+                            self.engine
+                                .update_control_normalization(self.control_normalization);
+                        } else {
+                            self.normalization = self.normalization.next();
+                            self.engine.update_normalization(self.normalization);
+                        }
                         self.requested_viewport.generation =
                             self.requested_viewport.generation.wrapping_add(1);
                         self.request_current();
-                        app_log!("normalization changed: {}", self.normalization.label());
+                        app_log!(
+                            "{} normalization changed: {}",
+                            if self.matrix_type.uses_control() {
+                                "control"
+                            } else {
+                                "observed"
+                            },
+                            self.active_normalization().label()
+                        );
                     }
                     PhysicalKey::Code(KeyCode::KeyM) => {
-                        self.matrix_type = self.matrix_type.next();
+                        self.matrix_type = self.matrix_type.next(self.control_available);
                         self.engine.update_matrix_type(self.matrix_type);
                         self.requested_viewport.generation =
                             self.requested_viewport.generation.wrapping_add(1);
@@ -1166,7 +1257,10 @@ impl ApplicationHandler for App {
                         self.color_range,
                         self.selected_scaffold
                             .map(|placement| [placement.start, placement.end]),
-                        self.matrix_type == MatrixType::Pearson,
+                        matches!(
+                            self.matrix_type,
+                            MatrixType::Pearson | MatrixType::ControlPearson
+                        ),
                     ) {
                         Ok(()) => {}
                         Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -1241,6 +1335,25 @@ fn should_request_settled_viewport(
             && requested.generation != displayed.generation)
 }
 
+fn should_request_idle_viewport(
+    requested: GenomeViewport,
+    completed: GenomeViewport,
+    last_submitted_generation: u64,
+) -> bool {
+    requested.generation != completed.generation
+        && requested.generation != last_submitted_generation
+}
+
+/// A visible view can be covered by an older overscanned texture and still
+/// need a fresh worker request: that request is what fills the newly exposed
+/// genomic area at native detail and primes the directional prefetch cache.
+fn should_submit_interaction_viewport(
+    requested: GenomeViewport,
+    last_submitted_generation: u64,
+) -> bool {
+    requested.generation != last_submitted_generation
+}
+
 fn main() {
     std::panic::set_hook(Box::new(|panic| {
         app_log!("panic: {panic}");
@@ -1285,6 +1398,7 @@ fn run() -> Result<()> {
         .map(|value| value.to_string_lossy().into_owned())
         .unwrap_or_else(|| "1_1".to_owned());
     let assembly_path = arguments.next().map(PathBuf::from);
+    let control_path = arguments.next().map(PathBuf::from);
     let file = HicFile::open(&hic_path)?;
     let matrix = file.read_matrix(&matrix_key)?;
     let chromosome = file
@@ -1313,7 +1427,13 @@ fn run() -> Result<()> {
             .map_or(chromosome.length, AssemblyCoordinateMap::total_length),
         INITIAL_SPAN_FRACTION,
     );
-    let engine = TileEngine::spawn(hic_path.clone(), matrix_key.clone(), assembly_map)?;
+    let control_available = control_path.is_some();
+    let engine = TileEngine::spawn(
+        hic_path.clone(),
+        matrix_key.clone(),
+        assembly_map,
+        control_path.clone(),
+    )?;
     engine.request(viewport);
     let initial = loop {
         if let Some(result) = engine.try_result() {
@@ -1330,7 +1450,7 @@ fn run() -> Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(5));
     };
     let base_title = format!(
-        "Juicebox Rust — {} — {} — REAL DYNAMIC HIC{}",
+        "Juicebox Rust — {} — {} — REAL DYNAMIC HIC{}{}",
         hic_path.display(),
         matrix_key,
         assembly
@@ -1340,6 +1460,10 @@ fn run() -> Result<()> {
                 document.scaffolds.len(),
                 document.superscaffolds.len()
             ))
+            .unwrap_or_default(),
+        control_path
+            .as_ref()
+            .map(|path| format!(" — CONTROL {}", path.display()))
             .unwrap_or_default(),
     );
     app_log!(
@@ -1359,6 +1483,7 @@ fn run() -> Result<()> {
         resolved_assembly_path
             .is_file()
             .then_some(resolved_assembly_path),
+        control_available,
     ))?;
     Ok(())
 }
@@ -1391,6 +1516,48 @@ fn load_assembly(
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    fn request_complete_tile(
+        engine: &TileEngine,
+        viewport: &mut GenomeViewport,
+        matrix_type: MatrixType,
+    ) -> (TileResult, Vec<u32>) {
+        engine.update_matrix_type(matrix_type);
+        viewport.generation = viewport.generation.wrapping_add(1);
+        engine.request(*viewport);
+        let started = Instant::now();
+        let mut raster =
+            vec![0.0_f32; tile_engine::OUTPUT_SIZE as usize * tile_engine::OUTPUT_SIZE as usize];
+        loop {
+            if let Some(result) = engine.try_result() {
+                let result = result.expect("real-data tile request failed");
+                if result.viewport.generation == viewport.generation
+                    && result.matrix_type == matrix_type
+                {
+                    if let Some([x, y, width, height]) = result.dirty_rect {
+                        for row in 0..height {
+                            let source = (row * width) as usize;
+                            let target = ((y + row) * tile_engine::OUTPUT_SIZE + x) as usize;
+                            raster[target..target + width as usize].copy_from_slice(
+                                &result.tile.values[source..source + width as usize],
+                            );
+                        }
+                    } else {
+                        raster.copy_from_slice(&result.tile.values);
+                    }
+                    if result.complete {
+                        let bits = raster.iter().map(|value| value.to_bits()).collect();
+                        return (result, bits);
+                    }
+                }
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(60),
+                "timed out waiting for {matrix_type:?}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
 
     #[test]
     fn parses_cpu_fallback_environment_switch() {
@@ -1566,5 +1733,71 @@ mod tests {
             Some(current_prediction),
             false
         ));
+    }
+
+    #[test]
+    fn idle_settle_submits_the_latest_generation_after_coalesced_drag_input() {
+        let mut completed = GenomeViewport::new(1_000, 0.6);
+        completed.generation = 3;
+        let mut requested = GenomeViewport::new(1_000, 0.4);
+        requested.generation = 8;
+
+        assert!(should_request_idle_viewport(requested, completed, 5));
+        assert!(!should_request_idle_viewport(requested, completed, 8));
+        assert!(!should_request_idle_viewport(completed, completed, 3));
+    }
+
+    #[test]
+    fn small_pan_requests_current_generation_even_inside_overscan() {
+        let mut completed = GenomeViewport::new(1_000, 0.6);
+        completed.center_bp = [500.0, 500.0];
+        let mut requested = GenomeViewport::new(1_000, 0.4);
+        requested.center_bp = [535.0, 500.0];
+        requested.generation = 8;
+
+        // The older overscanned texture is still drawable, which is exactly
+        // why this case used to skip a request and never prefetch ahead.
+        assert!(viewport_can_serve(requested, completed, true));
+        // schedule_request's first branch is deliberately generation based,
+        // rather than coverage based, so generation 8 is submitted.
+        assert!(should_submit_interaction_viewport(requested, 5));
+        assert!(!should_submit_interaction_viewport(requested, 8));
+    }
+
+    #[test]
+    #[ignore = "requires JUICEBOX_REAL_HIC and performs full real-data Pearson calculations"]
+    fn real_same_file_control_modes_match_observed_raw_bits() {
+        let path = PathBuf::from(
+            std::env::var_os("JUICEBOX_REAL_HIC")
+                .expect("set JUICEBOX_REAL_HIC to a real intrachromosomal .hic file"),
+        );
+        let file = HicFile::open(&path).expect("failed to open real .hic");
+        let matrix = file.read_matrix("1_1").expect("missing matrix 1_1");
+        let chromosome = &file.header.chromosomes[matrix.chromosome_1 as usize];
+        let engine = TileEngine::spawn(path.clone(), "1_1".to_owned(), None, Some(path.clone()))
+            .expect("same-file control should be compatible");
+        let mut viewport = GenomeViewport::new(chromosome.length, INITIAL_SPAN_FRACTION);
+
+        let (observed, observed_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::Observed);
+        let (control, control_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::Control);
+        assert!(
+            observed.cache_misses > 0 && control.cache_misses > 0,
+            "both dataset readers must populate their own visible Block cache"
+        );
+        assert_eq!(observed_bits, control_bits);
+
+        let (_, observed_oe_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::ObservedOverExpected);
+        let (_, control_oe_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::ControlOverExpected);
+        assert_eq!(observed_oe_bits, control_oe_bits);
+
+        let (_, observed_pearson_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::Pearson);
+        let (_, control_pearson_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::ControlPearson);
+        assert_eq!(observed_pearson_bits, control_pearson_bits);
     }
 }

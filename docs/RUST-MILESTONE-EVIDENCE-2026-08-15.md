@@ -72,6 +72,10 @@ double-bit fingerprint。
 11. 最新 portable EXE 依次按 `M` 进入 Expected、O/E 和 Pearson；Pearson 在 NVIDIA
     GeForce RTX 5070 Ti / Vulkan 上以 250 kb 完整显示红蓝相关热图，generation 3 的
     1024×1024 R32F 纹理上传为 4,194,304 bytes，热缓存场景约 1.45 s。
+12. 同一真实 `genome.hic` 作为 observed/control 的自动化 identity Gate 完整比较
+    Observed=Control、O/E=Control/ExpectedC、Pearson=Control Pearson 的 1024×1024
+    float raw bits；两侧首次可见 Block 均有独立 cache miss。该测试由
+    `tools/verify-real-data.ps1` 自动执行并输出 `Control identity match`。
 
 对应开发期日志保存在本地未提交目录 `__artifacts_temp/`，正式运行日志写入：
 
@@ -94,7 +98,7 @@ Windows GUI subsystem, embeds the Juicebox icon, provides file dialogs and logs 
 
 ## Known remaining gates
 
-- Control 和其他高级 MatrixType 语义。
+- Observed-vs-Control、ratio/difference 和其他比较型 MatrixType 语义。
 - 更高级 Assembly 多选、phase 与 Java UI 完整交互 parity。
 - Intel/AMD/NVIDIA and 125/150/200% DPI matrix.
 - 30-minute memory/performance soak.
