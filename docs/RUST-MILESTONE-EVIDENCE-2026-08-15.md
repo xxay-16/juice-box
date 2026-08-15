@@ -92,6 +92,10 @@ double-bit fingerprint。
     `tools/verify-real-data.ps1` 自动执行并输出 `Control identity match`。
 16. 同文件比较 Gate 进一步验证 VS 关于对角线对称、RATIO/RATIOV2 仅产生 0/1、
     OEVS 与 observed O/E 一致、PearsonVS 与 observed Pearson 一致。
+17. JDK 25 production renderer Gate 扩展到 Java 默认菜单的 11 个标准模式，新增
+    OEV2、OECTRLV2、OEVSV2、LOG、LOGC、LOGEOVS。Rust 与
+    `HeatmapRenderer.render` 的有序 6×6 raw-float bits 全部一致；完整输出保存在
+    `.omo/evidence/standard-matrix-types-pixel-gate-2026-08-16.log`。
 
 对应开发期日志保存在本地未提交目录 `__artifacts_temp/`，正式运行日志写入：
 
@@ -114,7 +118,7 @@ Windows GUI subsystem, embeds the Juicebox icon, provides file dialogs and logs 
 
 ## Known remaining gates
 
-- difference 和其他高级比较型 MatrixType；真实异源 control 数据集 Gate。
+- difference 和其他 Java advanced MatrixType；更广泛的真实异源 control 数据集语料。
 - 更高级 Assembly 多选、phase 与 Java UI 完整交互 parity。
 - Intel/AMD/NVIDIA and 125/150/200% DPI matrix.
 - 30-minute memory/performance soak.

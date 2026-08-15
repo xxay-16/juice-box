@@ -37,7 +37,10 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     (Join-Path $root "src/juicebox/mapcolorui/HeatmapRenderer.java") `
     (Join-Path $root "src/juicebox/tools/utils/dev/HiCComparisonRenderFingerprint.java")
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-$comparisonModes = @("VS", "RATIO", "RATIOV2", "OEVS", "PEARSONVS")
+$comparisonModes = @(
+    "VS", "RATIO", "RATIOV2", "OEVS", "PEARSONVS",
+    "OEV2", "OECTRLV2", "OEVSV2", "LOG", "LOGC", "LOGEOVS"
+)
 $comparisonHicRoot = Join-Path $root "__artifacts_temp/comparison-hic"
 New-Item -ItemType Directory -Force $comparisonHicRoot | Out-Null
 $comparisonObservedHic = Join-Path $comparisonHicRoot "observed.hic"
@@ -56,7 +59,7 @@ $env:JUICEBOX_ASYMMETRIC_OBSERVED_HIC = $comparisonObservedHic
 $env:JUICEBOX_ASYMMETRIC_CONTROL_HIC = $comparisonControlHic
 cargo test -q -p heatmap-wgpu real_distinct_control_fixture_exercises_dual_reader_comparison_modes -- --ignored
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-Write-Output "Distinct control fixture rendered: VS, Ratio/RatioV2, O/E-VS, Pearson-VS"
+Write-Output "Distinct control fixture rendered: VS, Ratio/RatioV2, O/E-VS, Pearson-VS, OEV2/OECTRLV2/OEVSV2, LOG/LOGC/LOGEOVS"
 $javaRenderComparison = & $javaExe -cp "$probeRoot;$JavaJar" `
     juicebox.tools.utils.dev.HiCComparisonRenderFingerprint `
     $comparisonObservedHic $comparisonControlHic
@@ -82,7 +85,7 @@ foreach ($mode in $comparisonModes) {
         throw "Production render mismatch at ${mode}: Rust=$($rustRenderRows[$mode] -join ',') Java=$($javaRenderRows[$mode] -join ',')"
     }
 }
-Write-Output "Production pixel-grid match: Java HeatmapRenderer.render vs Rust TileEngine (36 ordered cells per mode)"
+Write-Output "Production pixel-grid match: Java HeatmapRenderer.render vs Rust TileEngine ($($comparisonModes.Count) modes, 36 ordered cells per mode)"
 $java = & $javaExe -cp "$JavaJar;$probeRoot" juicebox.tools.utils.dev.HiCReaderFingerprint $HicFile 1_1
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -241,5 +244,5 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $env:JUICEBOX_REAL_HIC = [System.IO.Path]::GetFullPath($HicFile)
 cargo test -q -p heatmap-wgpu real_same_file_control_modes_match_observed_raw_bits -- --ignored
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-Write-Output "Control identity match: isolated views plus VS, Ratio/RatioV2, O/E-VS, Pearson-VS"
+Write-Output "Control identity match: isolated views plus standard VS, Ratio, O/E, Pearson, V2, and Log comparisons"
 Write-Output "Real-data verification passed."

@@ -9,8 +9,9 @@ Assembly。
 - 左键拖动：平移；滚轮：以鼠标位置为中心缩放。
 - `+` / `-`：调整颜色上限；`A`：恢复自动颜色范围；`R`：重置视图。
 - `N`：循环当前数据源的 NONE / KR / VC / VC_SQRT；`M`：无 control 时循环
-  Observed / Expected / O/E / Pearson。通过命令行提供 control 后，还会加入 Control、
-  Control/ExpectedC、Control Pearson、VS、RATIO/RATIOV2、OEVS 和 PearsonVS；observed/control
+  Observed / Expected / O/E / OEV2 / Pearson / LOG。通过命令行提供 control 后，循环
+  Java 默认菜单的 18 个标准模式：基础 observed/control、VS、RATIO/RATIOV2、
+  O/E/OEV2 的 observed/control/VS、Pearson 的 observed/control/VS，以及 LOG/LOGC/LOGEOVS；observed/control
   normalization 与缓存彼此独立。
 - 右键第一次：选择 scaffold；右键第二次点另一个 scaffold：把选中项移动到目标项前，
   原位置后的 scaffold 会自动顺次补上。`I`：翻转选中 scaffold。
@@ -34,7 +35,9 @@ vector 解码，以及 NONE/KR/VC/VC_SQRT 下的 Observed、Expected、O/E 和 P
 均已逐条与 JDK 25 Java Reader 对照。动态 LOD、Assembly 顺序/方向映射和当前编辑工具
 也已接入；当前可执行顺序移动、单 scaffold 翻转、debris 提取、superscaffold 拆分/
 合并、撤销/重做和 modified assembly 保存。Control 双数据源的基础 Control、
-Control/ExpectedC、Control Pearson、VS、RATIO/RATIOV2、OEVS、PearsonVS 已接入；difference、旧 session
+Control/ExpectedC、Control Pearson、VS、RATIO/RATIOV2、OEVS、PearsonVS、
+OEV2/OECTRLV2/OEVSV2、LOG/LOGC/LOGEOVS 已接入，并通过 Java production renderer
+有序像素 Gate；difference、Java advanced MatrixType、旧 session
 和全部 Java UI 功能
 仍由 JDK 25 主版本提供；未实现模式不能用于科研结论。
 

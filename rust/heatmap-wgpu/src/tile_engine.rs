@@ -82,14 +82,22 @@ pub enum MatrixType {
     Observed,
     Expected,
     ObservedOverExpected,
+    ObservedOverExpectedV2,
     Pearson,
+    LogObserved,
+    LogObservedExpected,
     Control,
     ControlOverExpected,
+    ControlOverExpectedV2,
     ControlPearson,
+    LogControl,
+    LogControlExpected,
     Vs,
     Ratio,
     RatioV2,
     ObservedOverExpectedVs,
+    ObservedOverExpectedVsV2,
+    LogObservedExpectedVs,
     PearsonVs,
 }
 
@@ -99,14 +107,24 @@ impl MatrixType {
             Self::Observed => "Observed",
             Self::Expected => "Expected",
             Self::ObservedOverExpected => "O/E",
+            Self::ObservedOverExpectedV2 => "Log[Observed/Expected]",
             Self::Pearson => "Pearson",
+            Self::LogObserved => "Log[Observed+1]",
+            Self::LogObservedExpected => "Log[Observed+1]/Log[Expected+1]",
             Self::Control => "Control",
             Self::ControlOverExpected => "Control/ExpectedC",
+            Self::ControlOverExpectedV2 => "Log[Control/ExpectedC]",
             Self::ControlPearson => "Control Pearson",
+            Self::LogControl => "Log[Control+1]",
+            Self::LogControlExpected => "Log[Control+1]/Log[ExpectedC+1]",
             Self::Vs => "Observed vs Control",
             Self::Ratio => "Observed/Control * (AvgC/AvgO)",
             Self::RatioV2 => "Log[Observed/Control * (AvgC/AvgO)]",
             Self::ObservedOverExpectedVs => "O/E vs Control/ExpectedC",
+            Self::ObservedOverExpectedVsV2 => "Log[Observed/Expected] vs Log[Control/ExpectedC]",
+            Self::LogObservedExpectedVs => {
+                "Log[Observed+1]/Log[Expected+1] vs Log[Control+1]/Log[ExpectedC+1]"
+            }
             Self::PearsonVs => "Observed Pearson vs Control Pearson",
         }
     }
@@ -116,7 +134,9 @@ impl MatrixType {
             return match self {
                 Self::Observed => Self::Expected,
                 Self::Expected => Self::ObservedOverExpected,
-                Self::ObservedOverExpected => Self::Pearson,
+                Self::ObservedOverExpected => Self::ObservedOverExpectedV2,
+                Self::ObservedOverExpectedV2 => Self::Pearson,
+                Self::Pearson => Self::LogObserved,
                 _ => Self::Observed,
             };
         }
@@ -129,17 +149,29 @@ impl MatrixType {
             Self::RatioV2 => Self::ObservedOverExpected,
             Self::ObservedOverExpected => Self::ControlOverExpected,
             Self::ControlOverExpected => Self::ObservedOverExpectedVs,
-            Self::ObservedOverExpectedVs => Self::Pearson,
+            Self::ObservedOverExpectedVs => Self::ObservedOverExpectedV2,
+            Self::ObservedOverExpectedV2 => Self::ControlOverExpectedV2,
+            Self::ControlOverExpectedV2 => Self::ObservedOverExpectedVsV2,
+            Self::ObservedOverExpectedVsV2 => Self::Pearson,
             Self::Pearson => Self::ControlPearson,
             Self::ControlPearson => Self::PearsonVs,
-            Self::PearsonVs => Self::Observed,
+            Self::PearsonVs => Self::LogObserved,
+            Self::LogObserved => Self::LogControl,
+            Self::LogControl => Self::LogObservedExpectedVs,
+            Self::LogObservedExpectedVs => Self::Observed,
+            Self::LogObservedExpected | Self::LogControlExpected => Self::Observed,
         }
     }
 
     pub fn uses_control(self) -> bool {
         matches!(
             self,
-            Self::Control | Self::ControlOverExpected | Self::ControlPearson
+            Self::Control
+                | Self::ControlOverExpected
+                | Self::ControlOverExpectedV2
+                | Self::ControlPearson
+                | Self::LogControl
+                | Self::LogControlExpected
         )
     }
 
@@ -147,14 +179,41 @@ impl MatrixType {
         matches!(self, Self::Pearson | Self::ControlPearson | Self::PearsonVs)
     }
 
-    fn is_observed(self) -> bool {
-        matches!(self, Self::Observed | Self::Control)
+    fn needs_expected(self) -> bool {
+        matches!(
+            self,
+            Self::Expected
+                | Self::ObservedOverExpected
+                | Self::ObservedOverExpectedV2
+                | Self::ControlOverExpected
+                | Self::ControlOverExpectedV2
+                | Self::LogObservedExpected
+                | Self::LogControlExpected
+                | Self::Pearson
+                | Self::ControlPearson
+        )
     }
 
     pub fn is_comparison(self) -> bool {
         matches!(
             self,
-            Self::Vs | Self::Ratio | Self::RatioV2 | Self::ObservedOverExpectedVs | Self::PearsonVs
+            Self::Vs
+                | Self::Ratio
+                | Self::RatioV2
+                | Self::ObservedOverExpectedVs
+                | Self::ObservedOverExpectedVsV2
+                | Self::LogObservedExpectedVs
+                | Self::PearsonVs
+        )
+    }
+
+    pub fn uses_log_ratio_color_scale(self) -> bool {
+        matches!(
+            self,
+            Self::RatioV2
+                | Self::ObservedOverExpectedV2
+                | Self::ControlOverExpectedV2
+                | Self::ObservedOverExpectedVsV2
         )
     }
 }
@@ -472,8 +531,14 @@ fn build_tile_streaming(
         request.matrix_type,
         MatrixType::Observed
             | MatrixType::ObservedOverExpected
+            | MatrixType::ObservedOverExpectedV2
+            | MatrixType::LogObserved
+            | MatrixType::LogObservedExpected
             | MatrixType::Control
             | MatrixType::ControlOverExpected
+            | MatrixType::ControlOverExpectedV2
+            | MatrixType::LogControl
+            | MatrixType::LogControlExpected
     )
     .then(|| {
         normalization_vector(
@@ -487,7 +552,9 @@ fn build_tile_streaming(
     })
     .transpose()?
     .flatten();
-    let expected_vector = (!request.matrix_type.is_observed())
+    let expected_vector = request
+        .matrix_type
+        .needs_expected()
         .then(|| expected_vector(file, normalization, zoom.bin_size, expected_cache))
         .transpose()?;
     let rendered_viewport = rendered_viewport_for(request.viewport);
@@ -781,109 +848,100 @@ fn build_comparison_tile(
         return Ok(Some(rendered_viewport));
     }
 
-    let (observed_values, control_values, observed_stats, control_stats) = if request.matrix_type
-        == MatrixType::PearsonVs
-    {
-        let observed_expected = expected_vector(
-            observed_file,
-            request.observed_normalization,
-            observed_zoom.bin_size,
-            &mut observed_state.expected_cache,
-        )?;
-        let control_expected = expected_vector(
-            control_file,
-            request.control_normalization,
-            control_zoom.bin_size,
-            &mut control_state.expected_cache,
-        )?;
-        let Some(observed_pearson) = pearson_matrix(
-            observed_file,
-            observed_matrix,
-            observed_zoom,
-            request.observed_normalization,
-            &observed_expected,
-            &mut observed_state.pearson_cache,
-            latest_generation,
-            generation,
-        )?
-        else {
-            return Ok(None);
-        };
-        let Some(control_pearson) = pearson_matrix(
-            control_file,
-            control_matrix,
-            control_zoom,
-            request.control_normalization,
-            &control_expected,
-            &mut control_state.pearson_cache,
-            latest_generation,
-            generation,
-        )?
-        else {
-            return Ok(None);
-        };
-        (
-            rasterize_dense_pearson(
-                &observed_pearson,
-                bin_bounds,
+    let (observed_values, control_values, observed_stats, control_stats) =
+        if request.matrix_type == MatrixType::PearsonVs {
+            let observed_expected = expected_vector(
+                observed_file,
+                request.observed_normalization,
                 observed_zoom.bin_size,
-                request.assembly_map.as_deref(),
-            ),
-            rasterize_dense_pearson(
-                &control_pearson,
-                bin_bounds,
+                &mut observed_state.expected_cache,
+            )?;
+            let control_expected = expected_vector(
+                control_file,
+                request.control_normalization,
                 control_zoom.bin_size,
-                request.assembly_map.as_deref(),
-            ),
-            DatasetRasterStats::default(),
-            DatasetRasterStats::default(),
-        )
-    } else {
-        let observed_source_type = if request.matrix_type == MatrixType::ObservedOverExpectedVs {
-            MatrixType::ObservedOverExpected
+                &mut control_state.expected_cache,
+            )?;
+            let Some(observed_pearson) = pearson_matrix(
+                observed_file,
+                observed_matrix,
+                observed_zoom,
+                request.observed_normalization,
+                &observed_expected,
+                &mut observed_state.pearson_cache,
+                latest_generation,
+                generation,
+            )?
+            else {
+                return Ok(None);
+            };
+            let Some(control_pearson) = pearson_matrix(
+                control_file,
+                control_matrix,
+                control_zoom,
+                request.control_normalization,
+                &control_expected,
+                &mut control_state.pearson_cache,
+                latest_generation,
+                generation,
+            )?
+            else {
+                return Ok(None);
+            };
+            (
+                rasterize_dense_pearson(
+                    &observed_pearson,
+                    bin_bounds,
+                    observed_zoom.bin_size,
+                    request.assembly_map.as_deref(),
+                ),
+                rasterize_dense_pearson(
+                    &control_pearson,
+                    bin_bounds,
+                    control_zoom.bin_size,
+                    request.assembly_map.as_deref(),
+                ),
+                DatasetRasterStats::default(),
+                DatasetRasterStats::default(),
+            )
         } else {
-            MatrixType::Observed
+            let (observed_source_type, control_source_type) =
+                comparison_raster_types(request.matrix_type);
+            let Some((observed_values, observed_stats)) = rasterize_dataset(
+                observed_file,
+                observed_matrix,
+                observed_zoom,
+                observed_state,
+                request.observed_normalization,
+                observed_source_type,
+                &request,
+                bin_bounds,
+                latest_generation,
+            )?
+            else {
+                return Ok(None);
+            };
+            let Some((control_values, control_stats)) = rasterize_dataset(
+                control_file,
+                control_matrix,
+                control_zoom,
+                control_state,
+                request.control_normalization,
+                control_source_type,
+                &request,
+                bin_bounds,
+                latest_generation,
+            )?
+            else {
+                return Ok(None);
+            };
+            (
+                observed_values,
+                control_values,
+                observed_stats,
+                control_stats,
+            )
         };
-        let control_source_type = if request.matrix_type == MatrixType::ObservedOverExpectedVs {
-            MatrixType::ControlOverExpected
-        } else {
-            MatrixType::Control
-        };
-        let Some((observed_values, observed_stats)) = rasterize_dataset(
-            observed_file,
-            observed_matrix,
-            observed_zoom,
-            observed_state,
-            request.observed_normalization,
-            observed_source_type,
-            &request,
-            bin_bounds,
-            latest_generation,
-        )?
-        else {
-            return Ok(None);
-        };
-        let Some((control_values, control_stats)) = rasterize_dataset(
-            control_file,
-            control_matrix,
-            control_zoom,
-            control_state,
-            request.control_normalization,
-            control_source_type,
-            &request,
-            bin_bounds,
-            latest_generation,
-        )?
-        else {
-            return Ok(None);
-        };
-        (
-            observed_values,
-            control_values,
-            observed_stats,
-            control_stats,
-        )
-    };
     if is_stale(latest_generation, generation) {
         return Ok(None);
     }
@@ -904,9 +962,10 @@ fn build_comparison_tile(
         MatrixType::Ratio | MatrixType::RatioV2 => {
             unreachable!("ratio modes use contact-level pairing before rasterization")
         }
-        MatrixType::ObservedOverExpectedVs | MatrixType::PearsonVs => {
-            combine_triangles(&observed_values, &control_values)
-        }
+        MatrixType::ObservedOverExpectedVs
+        | MatrixType::ObservedOverExpectedVsV2
+        | MatrixType::LogObservedExpectedVs
+        | MatrixType::PearsonVs => combine_triangles(&observed_values, &control_values),
         _ => unreachable!("comparison builder received a non-comparison MatrixType"),
     };
     let visible_blocks = observed_stats.visible_blocks + control_stats.visible_blocks;
@@ -928,6 +987,20 @@ fn build_comparison_tile(
         started,
     )?;
     Ok(Some(rendered_viewport))
+}
+
+fn comparison_raster_types(matrix_type: MatrixType) -> (MatrixType, MatrixType) {
+    match matrix_type {
+        MatrixType::ObservedOverExpectedVs | MatrixType::ObservedOverExpectedVsV2 => (
+            MatrixType::ObservedOverExpected,
+            MatrixType::ControlOverExpected,
+        ),
+        MatrixType::LogObservedExpectedVs => (
+            MatrixType::LogObservedExpected,
+            MatrixType::LogControlExpected,
+        ),
+        _ => (MatrixType::Observed, MatrixType::Control),
+    }
 }
 
 #[derive(Default)]
@@ -1049,7 +1122,12 @@ fn rasterize_dataset(
     )?;
     let expected = matches!(
         source_type,
-        MatrixType::ObservedOverExpected | MatrixType::ControlOverExpected
+        MatrixType::ObservedOverExpected
+            | MatrixType::ObservedOverExpectedV2
+            | MatrixType::ControlOverExpected
+            | MatrixType::ControlOverExpectedV2
+            | MatrixType::LogObservedExpected
+            | MatrixType::LogControlExpected
     )
     .then(|| {
         expected_vector(
@@ -1310,8 +1388,23 @@ fn accumulate_block(
             let (bin_x, bin_y, counts) = map_contact(&normalized, zoom.bin_size, assembly_map)?;
             let counts = match matrix_type {
                 MatrixType::Observed | MatrixType::Control => counts,
-                MatrixType::ObservedOverExpected | MatrixType::ControlOverExpected => {
-                    observed_over_expected(
+                MatrixType::LogObserved | MatrixType::LogControl => counts.ln_1p(),
+                MatrixType::ObservedOverExpected
+                | MatrixType::ObservedOverExpectedV2
+                | MatrixType::ControlOverExpected
+                | MatrixType::ControlOverExpectedV2 => observed_over_expected(
+                    ContactRecord {
+                        bin_x,
+                        bin_y,
+                        counts,
+                    },
+                    expected_vector?,
+                    chromosome,
+                    bin_x,
+                    bin_y,
+                )?,
+                MatrixType::LogObservedExpected | MatrixType::LogControlExpected => {
+                    log_observed_expected(
                         ContactRecord {
                             bin_x,
                             bin_y,
@@ -1331,6 +1424,8 @@ fn accumulate_block(
                 | MatrixType::Ratio
                 | MatrixType::RatioV2
                 | MatrixType::ObservedOverExpectedVs
+                | MatrixType::ObservedOverExpectedVsV2
+                | MatrixType::LogObservedExpectedVs
                 | MatrixType::PearsonVs => {
                     unreachable!("comparison tiles use the dual-dataset path")
                 }
@@ -1386,6 +1481,14 @@ fn matrix_type_id(matrix_type: MatrixType) -> u32 {
         MatrixType::RatioV2 => 9,
         MatrixType::ObservedOverExpectedVs => 10,
         MatrixType::PearsonVs => 11,
+        MatrixType::ObservedOverExpectedV2 => 12,
+        MatrixType::ControlOverExpectedV2 => 13,
+        MatrixType::ObservedOverExpectedVsV2 => 14,
+        MatrixType::LogObserved => 15,
+        MatrixType::LogControl => 16,
+        MatrixType::LogObservedExpected => 17,
+        MatrixType::LogControlExpected => 18,
+        MatrixType::LogObservedExpectedVs => 19,
     }
 }
 
@@ -1400,6 +1503,24 @@ fn observed_over_expected(
     let expected = expected.value_for(chromosome, distance)? as f32;
     let score = observed_over_expected_score(record.counts, expected, 0.0);
     (score != 0.0).then_some(score)
+}
+
+fn log_observed_expected(
+    record: ContactRecord,
+    expected: &ExpectedValueVector,
+    chromosome: u32,
+    mapped_bin_x: i32,
+    mapped_bin_y: i32,
+) -> Option<f32> {
+    let distance = u64::from((mapped_bin_x - mapped_bin_y).unsigned_abs());
+    let expected = expected.value_for(chromosome, distance)? as f32;
+    // Java performs the `float + 1` additions before Math.log promotes the
+    // operands to double. Preserve that intermediate rounding for raw-bit
+    // renderer parity.
+    let observed_plus_one = record.counts + 1.0;
+    let expected_plus_one = expected + 1.0;
+    let score = (f64::from(observed_plus_one).ln() / f64::from(expected_plus_one).ln()) as f32;
+    score.is_finite().then_some(score)
 }
 
 #[allow(
@@ -2372,6 +2493,102 @@ mod tests {
         );
     }
 
+    fn rasterize_single_record(matrix_type: MatrixType) -> Vec<f32> {
+        let expected = ExpectedValueVector {
+            key: ExpectedValueKey {
+                normalization: "NONE".to_owned(),
+                unit: MatrixUnit::BasePairs,
+                resolution: 1,
+            },
+            values: vec![4.0, 2.0],
+            chromosome_factors: BTreeMap::new(),
+        };
+        let mut values = vec![0.0; OUTPUT_SIZE as usize * OUTPUT_SIZE as usize];
+        accumulate_block(
+            &mut values,
+            [0, 0, 1, 1],
+            false,
+            &MatrixZoom {
+                unit: MatrixUnit::BasePairs,
+                bin_size: 1,
+                sum_counts: 0.0,
+                occupied_cell_count: 0.0,
+                standard_deviation: 0.0,
+                percentile_95: 0.0,
+                block_bin_count: 1,
+                block_column_count: 1,
+                blocks: BTreeMap::new(),
+            },
+            None,
+            None,
+            Some(&expected),
+            matrix_type,
+            1,
+            &[ContactRecord {
+                bin_x: 0,
+                bin_y: 1,
+                counts: 8.0,
+            }],
+        );
+        values
+    }
+
+    #[test]
+    fn v2_observed_expected_modes_preserve_their_scientific_raw_values() {
+        assert_eq!(
+            rasterize_single_record(MatrixType::ObservedOverExpectedV2),
+            rasterize_single_record(MatrixType::ObservedOverExpected),
+            "OEV2 differs only in the GPU colour scale"
+        );
+        assert_eq!(
+            rasterize_single_record(MatrixType::ControlOverExpectedV2),
+            rasterize_single_record(MatrixType::ControlOverExpected),
+            "OECTRLV2 differs only in the GPU colour scale"
+        );
+        assert!(MatrixType::ObservedOverExpectedV2.uses_log_ratio_color_scale());
+        assert!(MatrixType::ControlOverExpectedV2.uses_log_ratio_color_scale());
+        assert!(MatrixType::ObservedOverExpectedVsV2.uses_log_ratio_color_scale());
+        assert!(!MatrixType::ObservedOverExpected.uses_log_ratio_color_scale());
+        assert_eq!(
+            comparison_raster_types(MatrixType::ObservedOverExpectedVsV2),
+            comparison_raster_types(MatrixType::ObservedOverExpectedVs),
+            "OEVSV2 reuses O/E-VS scientific rasters and changes only the colour scale"
+        );
+    }
+
+    #[test]
+    fn log_observed_uses_java_log_one_plus_counts_semantics() {
+        let values = rasterize_single_record(MatrixType::LogObserved);
+        let pixel = OUTPUT_SIZE as usize * (OUTPUT_SIZE as usize / 2);
+        assert_eq!(values[pixel].to_bits(), 8.0_f32.ln_1p().to_bits());
+    }
+
+    #[test]
+    fn log_observed_expected_preserves_java_float_add_then_double_log_rounding() {
+        let expected = ExpectedValueVector {
+            key: ExpectedValueKey {
+                normalization: "NONE".to_owned(),
+                unit: MatrixUnit::BasePairs,
+                resolution: 1,
+            },
+            values: vec![3.210_987],
+            chromosome_factors: BTreeMap::new(),
+        };
+        let score = log_observed_expected(
+            ContactRecord {
+                bin_x: 0,
+                bin_y: 0,
+                counts: 12.345_678,
+            },
+            &expected,
+            1,
+            0,
+            0,
+        )
+        .unwrap();
+        assert_eq!(score.to_bits(), 0x3fe6_b27a);
+    }
+
     #[test]
     fn dense_expected_fills_zero_contact_cells_by_distance() {
         let expected = ExpectedValueVector {
@@ -2456,7 +2673,7 @@ mod tests {
     fn matrix_type_cycle_exposes_control_only_when_a_dataset_is_loaded() {
         let mut without_control = MatrixType::Observed;
         let mut observed_cycle = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..6 {
             observed_cycle.push(without_control);
             without_control = without_control.next(false);
         }
@@ -2466,14 +2683,16 @@ mod tests {
                 MatrixType::Observed,
                 MatrixType::Expected,
                 MatrixType::ObservedOverExpected,
+                MatrixType::ObservedOverExpectedV2,
                 MatrixType::Pearson,
+                MatrixType::LogObserved,
             ]
         );
         assert_eq!(without_control, MatrixType::Observed);
 
         let mut with_control = MatrixType::Observed;
         let mut control_cycle = Vec::new();
-        for _ in 0..12 {
+        for _ in 0..18 {
             control_cycle.push(with_control);
             with_control = with_control.next(true);
         }
@@ -2489,9 +2708,15 @@ mod tests {
                 MatrixType::ObservedOverExpected,
                 MatrixType::ControlOverExpected,
                 MatrixType::ObservedOverExpectedVs,
+                MatrixType::ObservedOverExpectedV2,
+                MatrixType::ControlOverExpectedV2,
+                MatrixType::ObservedOverExpectedVsV2,
                 MatrixType::Pearson,
                 MatrixType::ControlPearson,
                 MatrixType::PearsonVs,
+                MatrixType::LogObserved,
+                MatrixType::LogControl,
+                MatrixType::LogObservedExpectedVs,
             ]
         );
         assert_eq!(with_control, MatrixType::Observed);

@@ -41,6 +41,12 @@ fn main() -> Result<()> {
         MatrixType::RatioV2,
         MatrixType::ObservedOverExpectedVs,
         MatrixType::PearsonVs,
+        MatrixType::ObservedOverExpectedV2,
+        MatrixType::ControlOverExpectedV2,
+        MatrixType::ObservedOverExpectedVsV2,
+        MatrixType::LogObserved,
+        MatrixType::LogControl,
+        MatrixType::LogObservedExpectedVs,
     ] {
         engine.update_matrix_type(matrix_type);
         viewport.generation = viewport.generation.wrapping_add(1);
@@ -73,6 +79,12 @@ fn mode_name(matrix_type: MatrixType) -> &'static str {
         MatrixType::RatioV2 => "RATIOV2",
         MatrixType::ObservedOverExpectedVs => "OEVS",
         MatrixType::PearsonVs => "PEARSONVS",
+        MatrixType::ObservedOverExpectedV2 => "OEV2",
+        MatrixType::ControlOverExpectedV2 => "OECTRLV2",
+        MatrixType::ObservedOverExpectedVsV2 => "OEVSV2",
+        MatrixType::LogObserved => "LOG",
+        MatrixType::LogControl => "LOGC",
+        MatrixType::LogObservedExpectedVs => "LOGEOVS",
         _ => unreachable!(),
     }
 }

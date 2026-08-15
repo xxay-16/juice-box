@@ -1,10 +1,11 @@
 # Juicebox JDK 25 优化版
 
 > Rust/wgpu 新架构正在 `rust-wgpu-rearchitecture` 分支推进。它已经提供 raw observed
-> 动态热图、NONE/KR/VC/VC_SQRT、Observed/Expected/OE/Pearson、基础 Control 视图、Assembly 重排/debris/分组编辑
+> 动态热图、NONE/KR/VC/VC_SQRT、Observed/Expected/OE/Pearson、标准 Control/比较/Log 视图、Assembly 重排/debris/分组编辑
 > 和无需 JDK 的 Windows portable 单 EXE。构建：
 > `.\tools\build-rust-portable.ps1`；使用与功能边界见
-> [`docs/RUST-PORTABLE.md`](docs/RUST-PORTABLE.md)。首批 VS/RATIO/OEVS/PearsonVS 已接入；其余比较视图、旧 session 和
+> [`docs/RUST-PORTABLE.md`](docs/RUST-PORTABLE.md)。Java 默认菜单中的 VS、Ratio、O/E-VS、Pearson-VS、
+> OEV2/OECTRLV2/OEVSV2、LOG/LOGC/LOGEOVS 已接入并通过 JDK 25 production renderer 像素 Gate；高级 MatrixType、旧 session 和
 > 完整 Java UI 尚未迁移，科研工作仍以 JDK 25 主版本为完整功能基准。
 
 这是一个基于 [Aiden Lab Juicebox](https://github.com/aidenlab/Juicebox) 的桌面端优化版本，主要面向大体积 `.hic` 数据浏览和 Genome Assembly 编辑场景。

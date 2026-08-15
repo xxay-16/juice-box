@@ -1293,7 +1293,7 @@ impl ApplicationHandler for App {
                                 | MatrixType::PearsonVs
                         )
                         .then_some(1.0)
-                        .or_else(|| matches!(self.matrix_type, MatrixType::RatioV2).then_some(2.0))
+                        .or_else(|| self.matrix_type.uses_log_ratio_color_scale().then_some(2.0))
                         .unwrap_or(0.0),
                     ) {
                         Ok(()) => {}

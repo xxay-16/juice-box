@@ -55,6 +55,9 @@ UI adapter
 - scaffold 选择、翻转、移动、Undo/Redo 和 modified assembly 保存；
 - 无 JDK、静态 CRT 的 Windows portable 单 EXE。
 - Observed / dense Expected / O/E / Pearson，以及直接 Control / Control-OE / Control-Pearson MatrixType；observed 与 control normalization 和缓存彼此独立；
+- Java 默认菜单中的 VS、Ratio/RatioV2、O/E-VS、Pearson-VS、OEV2/OECTRLV2/OEVSV2、
+  LOG/LOGC/LOGEOVS；其中 V2 模式保留 O/E raw scientific values，仅由 shader 使用红蓝
+  log-ratio 色阶，Log 模式按 Java float 加法与 double `Math.log` 精度生成 R32F 值；
 - visible Block 并行解压后逐块栅格化和上传，进入视口的新区域无需等待全部 Block；
 - 真实 v8 数据的 raw/normalized Block、normalization vector、expected vector 和 O/E
   逐 record Java/Rust 指纹 Gate。
@@ -62,8 +65,8 @@ UI adapter
 真实 `genome.hic` v8 的 Reader Gate 已通过，CPU raw-observed、normalization、
 Observed/Expected/OE、动态 GPU viewport 和基础 Assembly 编辑垂直切片也已跑通。
 Control 双数据源现已建立独立 reader、Block/normalization/expected/Pearson cache，并接入
-Control、Control/ExpectedC 和 Control Pearson。Observed-vs-Control 与 ratio/difference
-仍未实现，因此这仍不是完整迁移：旧 session、高级 Assembly 多选/phase 工具和
+Control、Control/ExpectedC 和 Control Pearson。标准 VS/Ratio/O/E/Pearson/Log 比较视图已实现；difference
+及 Java advanced 菜单仍未实现，因此这仍不是完整迁移：旧 session、高级 Assembly 多选/phase 工具和
 跨设备验收尚未完成，不能据此替换 Java 主程序。GPU 初始化失败时已自动尝试软件/CPU
 适配器，并提供 `JUICEBOX_FORCE_CPU=1` 验收开关。
 
@@ -81,8 +84,9 @@ cargo run -p heatmap-wgpu -- ..\data\genome.hic 1_1 ..\data\genome.assembly [con
 最后一个命令会打开 GPU 原型。左键拖动、滚轮缩放；`+/-` 调色，`A` 恢复
 自动色阶，`R` 重置视图。右键选择 scaffold，再右键目标 scaffold 即移动到目标
 前，Ctrl+Z/Y 撤销重做，Ctrl+S 保存 modified assembly。`N` 切换 normalization，
-不传 control 文件时，`M` 切换 Observed / Expected / O/E / Pearson。传入第四个位置参数
-`control.hic` 后，会额外提供 Control / Control-Expected / Control-Pearson；单数据源视图中
+不传 control 文件时，`M` 切换 Observed / Expected / O/E / OEV2 / Pearson / LOG。传入第四个位置参数
+`control.hic` 后，会循环 Java 默认的 18 个标准模式，包括 Control、VS、Ratio/RatioV2、
+O/E/OEV2 三组 observed/control/VS、Pearson 三组和 LOG/LOGC/LOGEOVS；单数据源视图中
 `N` 切换当前数据源的 normalization，比较视图中 `N` 切 observed、`Shift+N` 切 control，
 标题同时显示两侧状态。
 
