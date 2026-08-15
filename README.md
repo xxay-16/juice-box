@@ -8,7 +8,7 @@
 > OEV2/OECTRLV2/OEVSV2、LOG/LOGC/LOGEOVS，以及 advanced expected/pseudocount 第一族
 > OEP1/OECTRLP1/OEVSP1（含 V2）、LOGEO/LOGCEO 和 transform/subtraction 族
 > EXPLOGEO/EXPLOGCEO/OCMEVS/DIFF，以及 ratio baseline 族 RATIOP1、RATIO0、RATIO0P1
->（均含 V2）已接入并通过 JDK 25 production renderer 像素 Gate；其余高级 MatrixType、旧 session 和
+>（均含 V2）与 OERATIO/OERATIOP1/OERATIOMINUS 族已接入并通过 JDK 25 production renderer 像素 Gate；其余高级 MatrixType、旧 session 和
 > 完整 Java UI 尚未迁移，科研工作仍以 JDK 25 主版本为完整功能基准。
 
 这是一个基于 [Aiden Lab Juicebox](https://github.com/aidenlab/Juicebox) 的桌面端优化版本，主要面向大体积 `.hic` 数据浏览和 Genome Assembly 编辑场景。

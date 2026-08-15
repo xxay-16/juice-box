@@ -595,7 +595,7 @@ public class HeatmapRenderer {
                             float score = (num / obsExpected) - (den / ctrlExpected);
                             if (Float.isNaN(score) || Float.isInfinite(score)) continue;
 
-                            setColor(cs.getColor(score));
+                            setScore(score, cs);
 
                             intraPainting(originX, originY, width, height, rec);
                         }
@@ -623,7 +623,7 @@ public class HeatmapRenderer {
                             float score = (num / obsExpected) - (den / ctrlExpected);
                             if (Float.isNaN(score) || Float.isInfinite(score)) continue;
 
-                            setColor(cs.getColor(score));
+                            setScore(score, cs);
 
                             aboveDiagonalPainting(originX, originY, width, height, rec);
                         }
@@ -671,7 +671,7 @@ public class HeatmapRenderer {
                             float score = (num / obsExpected) / (den / ctrlExpected);
                             if (Float.isNaN(score) || Float.isInfinite(score)) continue;
 
-                            setColor(cs.getColor(score));
+                            setScore(score, cs);
 
                             intraPainting(originX, originY, width, height, rec);
                         }
@@ -701,7 +701,7 @@ public class HeatmapRenderer {
                             float score = (num / obsExpected) / (den / ctrlExpected);
                             if (Float.isNaN(score) || Float.isInfinite(score)) continue;
 
-                            setColor(cs.getColor(score));
+                            setScore(score, cs);
 
                             aboveDiagonalPainting(originX, originY, width, height, rec);
                         }
