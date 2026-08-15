@@ -23,6 +23,13 @@ const PREFETCH_BLOCK_RINGS: i32 = 2;
 const BLOCK_CACHE_BUDGET_BYTES: usize = 256 * 1024 * 1024;
 const VIEW_OVERSCAN_FACTOR: f64 = 1.5;
 const MAX_BLOCK_READ_CONCURRENCY: usize = 16;
+// A dirty rectangle which covers most of the texture costs more to stage as
+// padded rows than a direct full R32F upload.  More importantly, emitting a
+// complete raster in that case lets the UI replace the entire newly panned
+// view atomically rather than leaving its broad changed region waiting on a
+// succession of large partial copies.
+const FULL_TEXTURE_UPLOAD_AREA_NUMERATOR: u64 = 3;
+const FULL_TEXTURE_UPLOAD_AREA_DENOMINATOR: u64 = 5;
 
 #[derive(Debug, Clone)]
 pub struct TileRequest {
@@ -415,8 +422,9 @@ fn build_tile_streaming(
             &block,
         );
         loaded_blocks += 1;
-        let upload_rect =
-            published_generation_texture.then_some(dirty_rect.unwrap_or([0, 0, 0, 0]));
+        let upload_rect = published_generation_texture
+            .then_some(dirty_rect.unwrap_or([0, 0, 0, 0]))
+            .filter(|rect| !dirty_rect_requires_full_upload(*rect));
         send_stream_result(
             sender,
             &request,
@@ -552,6 +560,15 @@ fn send_stream_result(
             elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
         }))
         .map_err(|_| anyhow::anyhow!("heatmap UI dropped the tile-result receiver"))
+}
+
+fn dirty_rect_requires_full_upload([_x, _y, width, height]: [u32; 4]) -> bool {
+    u64::from(width)
+        .saturating_mul(u64::from(height))
+        .saturating_mul(FULL_TEXTURE_UPLOAD_AREA_DENOMINATOR)
+        >= u64::from(OUTPUT_SIZE)
+            .saturating_mul(u64::from(OUTPUT_SIZE))
+            .saturating_mul(FULL_TEXTURE_UPLOAD_AREA_NUMERATOR)
 }
 
 #[allow(
@@ -1098,6 +1115,14 @@ mod tests {
         assert_eq!(overscan.center_bp, [300.0, 700.0]);
         assert_eq!(overscan.generation, 7);
         assert_eq!(overscan.bounds_bp(), [0.0, 400.0, 600.0, 1000.0]);
+    }
+
+    #[test]
+    fn broad_streamed_dirty_regions_request_a_full_texture_upload() {
+        assert!(dirty_rect_requires_full_upload([0, 0, 1024, 1024]));
+        assert!(dirty_rect_requires_full_upload([52, 52, 936, 936]));
+        assert!(!dirty_rect_requires_full_upload([100, 100, 512, 512]));
+        assert!(!dirty_rect_requires_full_upload([666, 715, 4, 4]));
     }
 
     #[test]
