@@ -279,8 +279,19 @@ impl GpuState {
 
     fn update_tile(&mut self, tile: &IntensityTile, dirty_rect: Option<[u32; 4]>) {
         if let Some(rect) = dirty_rect {
-            if [tile.width, tile.height] == [rect[2], rect[3]] {
-                write_intensity_texture_rect(&self.queue, &self.texture, tile, rect);
+            // Streamed results contain just the changed rectangle, not an
+            // entire 1024x1024 texture.  Comparing the rectangle dimensions
+            // with the *texture* dimensions here silently discarded every
+            // partial update after the first Block, so newly panned-in areas
+            // could remain blank until a later full upload.
+            if partial_upload_is_valid(self.texture_size, tile, rect) {
+                write_intensity_texture_rect(
+                    &self.queue,
+                    &self.texture,
+                    self.texture_size,
+                    tile,
+                    rect,
+                );
             }
         } else if self.texture_size == [tile.width, tile.height] {
             write_intensity_texture(&self.queue, &self.texture, tile);
@@ -427,10 +438,11 @@ fn write_intensity_texture(queue: &wgpu::Queue, texture: &wgpu::Texture, tile: &
 fn write_intensity_texture_rect(
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
+    texture_size: [u32; 2],
     tile: &IntensityTile,
     [x, y, width, height]: [u32; 4],
 ) {
-    if width == 0 || height == 0 || [width, height] != [tile.width, tile.height] {
+    if !partial_upload_is_valid(texture_size, tile, [x, y, width, height]) {
         return;
     }
     // WebGPU requires buffer row pitches to be 256-byte aligned. Queue
@@ -465,6 +477,20 @@ fn write_intensity_texture_rect(
             depth_or_array_layers: 1,
         },
     );
+}
+
+fn partial_upload_is_valid(
+    texture_size: [u32; 2],
+    tile: &IntensityTile,
+    [x, y, width, height]: [u32; 4],
+) -> bool {
+    width != 0
+        && height != 0
+        && [tile.width, tile.height] == [width, height]
+        && x.checked_add(width)
+            .is_some_and(|right| right <= texture_size[0])
+        && y.checked_add(height)
+            .is_some_and(|bottom| bottom <= texture_size[1])
 }
 
 struct App {
@@ -1384,6 +1410,34 @@ mod tests {
             cursor_in_square(PhysicalPosition::new(900.0, 800.0), size),
             [1.0, 1.0]
         );
+    }
+
+    #[test]
+    fn accepts_a_streamed_sub_rectangle_for_upload() {
+        let tile = IntensityTile::new(
+            heatmap_core::TileKey {
+                dataset: 1,
+                matrix_type: 0,
+                normalization: 0,
+                assembly_version: 0,
+                resolution: 1,
+                x: 0,
+                y: 0,
+            },
+            3,
+            2,
+            vec![0.0; 6],
+        );
+        assert!(partial_upload_is_valid(
+            [1024, 1024],
+            &tile,
+            [731, 741, 3, 2]
+        ));
+        assert!(!partial_upload_is_valid(
+            [1024, 1024],
+            &tile,
+            [1023, 741, 3, 2]
+        ));
     }
 
     #[test]
