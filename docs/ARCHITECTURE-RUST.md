@@ -64,6 +64,9 @@ UI adapter
 - advanced transform/subtraction 第二族：EXPLOGEO、EXPLOGCEO、OCMEVS 和 DIFF；
   OME/CME 作为 OCMEVS 的内部 observed/control source type 使用，因为当前 Java
   `HeatmapRenderer.render` 没有可作为权威基准的独立 OME/CME renderer 分支；
+- advanced ratio baseline 第三族：RATIOP1/RATIOP1V2 使用带 pseudocount 的 zoom average，
+  RATIO0/RATIO0V2 使用 expected distance-zero baseline，RATIO0P1/RATIO0P1V2 同时使用
+  distance-zero baseline 与 pseudocount；六种模式保持 paired-contact-only 与 Java float 运算顺序；
 - visible Block 并行解压后逐块栅格化和上传，进入视口的新区域无需等待全部 Block；
 - 真实 v8 数据的 raw/normalized Block、normalization vector、expected vector 和 O/E
   逐 record Java/Rust 指纹 Gate。
@@ -72,7 +75,7 @@ UI adapter
 Observed/Expected/OE、动态 GPU viewport 和基础 Assembly 编辑垂直切片也已跑通。
 Control 双数据源现已建立独立 reader、Block/normalization/expected/Pearson cache，并接入
 Control、Control/ExpectedC 和 Control Pearson。标准 VS/Ratio/O/E/Pearson/Log 比较视图以及 DIFF、
-EXPLOGEO/EXPLOGCEO/OCMEVS 已实现。JDK 25 production raw-pixel Gate 现覆盖 23 个模式，
+EXPLOGEO/EXPLOGCEO/OCMEVS 及 RATIOP1/RATIO0/RATIO0P1 家族已实现。JDK 25 production raw-pixel Gate 现覆盖 29 个模式，
 每模式比对 36 个有序像素。其余 Java advanced 菜单仍未实现，因此这仍不是完整迁移：旧 session、高级 Assembly 多选/phase 工具和
 跨设备验收尚未完成，不能据此替换 Java 主程序。GPU 初始化失败时已自动尝试软件/CPU
 适配器，并提供 `JUICEBOX_FORCE_CPU=1` 验收开关。

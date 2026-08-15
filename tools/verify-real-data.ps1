@@ -42,7 +42,8 @@ $comparisonModes = @(
     "OEV2", "OECTRLV2", "OEVSV2",
     "OEP1", "OEP1V2", "OECTRLP1", "OECTRLP1V2", "OEVSP1", "OEVSP1V2",
     "LOG", "LOGC", "LOGEO", "LOGCEO", "LOGEOVS",
-    "EXPLOGEO", "EXPLOGCEO", "OCMEVS", "DIFF"
+    "EXPLOGEO", "EXPLOGCEO", "OCMEVS", "DIFF",
+    "RATIOP1", "RATIOP1V2", "RATIO0", "RATIO0V2", "RATIO0P1", "RATIO0P1V2"
 )
 $comparisonHicRoot = Join-Path $root "__artifacts_temp/comparison-hic"
 New-Item -ItemType Directory -Force $comparisonHicRoot | Out-Null
@@ -244,7 +245,7 @@ foreach ($key in $javaPearsonRows.Keys) {
 
 cargo run -q -p assembly-core --bin assembly-info -- $AssemblyFile
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-$env:JUICEBOX_REAL_HIC = [System.IO.Path]::GetFullPath($HicFile)
+$env:JUICEBOX_REAL_HIC = [System.IO.Path]::GetFullPath($HicFile, $root)
 cargo test -q -p heatmap-wgpu real_same_file_control_modes_match_observed_raw_bits -- --ignored
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Output "Control identity match: isolated views plus standard VS, Ratio, O/E, Pearson, V2, and Log comparisons"

@@ -44,6 +44,34 @@ pub fn rasterize_ratio_contacts(
     observed_average: f32,
     control_average: f32,
 ) -> Vec<f32> {
+    rasterize_ratio_with_baselines_contacts(
+        observed,
+        control,
+        bin_bounds,
+        output_size,
+        symmetric,
+        observed_average,
+        control_average,
+        0.0,
+        0.0,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Java ratio modes expose independent observed/control baselines and pseudocounts"
+)]
+pub fn rasterize_ratio_with_baselines_contacts(
+    observed: &ContactMap,
+    control: &ContactMap,
+    bin_bounds: [i32; 4],
+    output_size: u32,
+    symmetric: bool,
+    observed_baseline: f32,
+    control_baseline: f32,
+    observed_pseudo_count: f32,
+    control_pseudo_count: f32,
+) -> Vec<f32> {
     assert!(output_size > 0);
     let output_size_usize = output_size as usize;
     let width_bins = (bin_bounds[2] - bin_bounds[0] + 1).max(1) as u64;
@@ -71,10 +99,16 @@ pub fn rasterize_ratio_contacts(
         let Some(&control_count) = control.get(&(bin_x, bin_y)) else {
             continue;
         };
-        if observed_count == 0.0 || control_count == 0.0 {
-            continue;
-        }
-        let score = (observed_count / observed_average) / (control_count / control_average);
+        // Match HeatmapRenderer.comparisonRatioWithAverageScore and
+        // renderRatioWithExpMap: every addition/division happens in float,
+        // then a non-finite final quotient is omitted. Baselines are either
+        // zoom averages (RATIO/RATIOP1) or expected distance zero
+        // (RATIO0/RATIO0P1).
+        let numerator =
+            (observed_count + observed_pseudo_count) / (observed_baseline + observed_pseudo_count);
+        let denominator =
+            (control_count + control_pseudo_count) / (control_baseline + control_pseudo_count);
+        let score = numerator / denominator;
         add(bin_x, bin_y, score);
         if symmetric && bin_x != bin_y {
             add(bin_y, bin_x, score);
@@ -167,6 +201,63 @@ mod tests {
         control.insert((2, 2), 5.0);
         let ratio = rasterize_ratio_contacts(&observed, &control, [0, 0, 2, 2], 3, true, 2.0, 4.0);
         assert_eq!(ratio, [1.0, 4.0, 0.0, 4.0, 0.5, 1.0, 0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn ratio_p1_keeps_zero_counts_and_uses_pseudocount_baselines() {
+        let observed = ContactMap::from([((0, 0), 0.0), ((0, 1), 3.0), ((1, 1), 9.0)]);
+        let control = ContactMap::from([((0, 0), 0.0), ((0, 1), 1.0)]);
+        let values = rasterize_ratio_with_baselines_contacts(
+            &observed,
+            &control,
+            [0, 0, 1, 1],
+            2,
+            true,
+            4.0,
+            2.0,
+            1.0,
+            1.0,
+        );
+        assert_eq!(
+            values.into_iter().map(f32::to_bits).collect::<Vec<_>>(),
+            [0x3f19_9999, 0x3f99_9999, 0x3f99_9999, 0,]
+        );
+    }
+
+    #[test]
+    fn ratio_expected_zero_uses_expected_distance_zero_baselines() {
+        let observed = ContactMap::from([((0, 0), 8.0)]);
+        let control = ContactMap::from([((0, 0), 4.0)]);
+        let values = rasterize_ratio_with_baselines_contacts(
+            &observed,
+            &control,
+            [0, 0, 0, 0],
+            1,
+            true,
+            16.0,
+            4.0,
+            0.0,
+            0.0,
+        );
+        assert_eq!(values[0].to_bits(), 0.5_f32.to_bits());
+    }
+
+    #[test]
+    fn ratio_expected_zero_p1_uses_expected_baseline_pseudocounts() {
+        let observed = ContactMap::from([((0, 0), 0.0), ((1, 1), 5.0)]);
+        let control = ContactMap::from([((0, 0), 0.0)]);
+        let values = rasterize_ratio_with_baselines_contacts(
+            &observed,
+            &control,
+            [0, 0, 1, 1],
+            2,
+            true,
+            3.0,
+            7.0,
+            1.0,
+            1.0,
+        );
+        assert_eq!(values, [2.0, 0.0, 0.0, 0.0]);
     }
 
     #[test]

@@ -52,7 +52,10 @@ public final class HiCComparisonRenderFingerprint {
                 MatrixType.OEVSP1, MatrixType.OEVSP1V2,
                 MatrixType.LOG, MatrixType.LOGC, MatrixType.LOGEO, MatrixType.LOGCEO,
                 MatrixType.LOGEOVS, MatrixType.EXPLOGEO, MatrixType.EXPLOGCEO,
-                MatrixType.OCMEVS, MatrixType.DIFF}) {
+                MatrixType.OCMEVS, MatrixType.DIFF,
+                MatrixType.RATIOP1, MatrixType.RATIOP1V2,
+                MatrixType.RATIO0, MatrixType.RATIO0V2,
+                MatrixType.RATIO0P1, MatrixType.RATIO0P1V2}) {
             BufferedImage image = new BufferedImage(6, 6, BufferedImage.TYPE_INT_ARGB);
             Graphics2D graphics = image.createGraphics();
             RecordingRenderer renderer = new RecordingRenderer(graphics, new ColorScaleHandler(), 6, 6);
