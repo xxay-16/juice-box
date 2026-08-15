@@ -4,7 +4,7 @@
 
 本里程碑目标是把早期整图 GPU 原型推进为可实际使用的动态热图和
 基础 Assembly 编辑器，并提供不依赖 JDK/安装器的 Windows portable 构建。完整替代
-Java Juicebox 仍要求 Control/Pearson、旧 session、全部高级 UI
+Java Juicebox 仍要求 Control、旧 session、全部高级 UI
 操作和跨设备长期运行验收；这些不在本里程碑的完成声明内。
 
 ## Automated gates
@@ -69,6 +69,9 @@ double-bit fingerprint。
 10. 真实 `genome.assembly` 对 scaffold 8 提取 debris，生成 163 scaffolds /
     33 superscaffolds，总长度仍为 617,772,809 bp；重绘、撤销、重做、保存和重新解析
     均通过。随后对 superscaffold 5 执行拆分与合并，generation 4/5 均完整显示。
+11. 最新 portable EXE 依次按 `M` 进入 Expected、O/E 和 Pearson；Pearson 在 NVIDIA
+    GeForce RTX 5070 Ti / Vulkan 上以 250 kb 完整显示红蓝相关热图，generation 3 的
+    1024×1024 R32F 纹理上传为 4,194,304 bytes，热缓存场景约 1.45 s。
 
 对应开发期日志保存在本地未提交目录 `__artifacts_temp/`，正式运行日志写入：
 
@@ -91,7 +94,7 @@ Windows GUI subsystem, embeds the Juicebox icon, provides file dialogs and logs 
 
 ## Known remaining gates
 
-- Control、Pearson 和其他高级 MatrixType 语义。
+- Control 和其他高级 MatrixType 语义。
 - 更高级 Assembly 多选、phase 与 Java UI 完整交互 parity。
 - Intel/AMD/NVIDIA and 125/150/200% DPI matrix.
 - 30-minute memory/performance soak.

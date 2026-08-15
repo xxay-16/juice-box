@@ -12,7 +12,10 @@ use std::{
 
 use anyhow::{Context, Result};
 use assembly_core::AssemblyCoordinateMap;
-use heatmap_core::{GenomeViewport, IntensityTile, TileKey};
+use heatmap_core::{
+    GenomeViewport, IntensityTile, MAX_PEARSON_CELLS, PearsonError, PearsonMatrix, TileKey,
+    compute_java_pearsons_cancellable,
+};
 use hic_core::{
     ContactRecord, ExpectedValueKey, ExpectedValueVector, HicFile, Matrix, MatrixUnit, MatrixZoom,
     NormalizationKey,
@@ -23,6 +26,7 @@ const PREFETCH_BLOCK_RINGS: i32 = 2;
 const BLOCK_CACHE_BUDGET_BYTES: usize = 256 * 1024 * 1024;
 const VIEW_OVERSCAN_FACTOR: f64 = 1.5;
 const MAX_BLOCK_READ_CONCURRENCY: usize = 16;
+const MIN_PEARSON_BIN_SIZE_BP: u32 = 50_000;
 // A dirty rectangle which covers most of the texture costs more to stage as
 // padded rows than a direct full R32F upload.  More importantly, emitting a
 // complete raster in that case lets the UI replace the entire newly panned
@@ -73,6 +77,7 @@ pub enum MatrixType {
     Observed,
     Expected,
     ObservedOverExpected,
+    Pearson,
 }
 
 impl MatrixType {
@@ -81,6 +86,7 @@ impl MatrixType {
             Self::Observed => "Observed",
             Self::Expected => "Expected",
             Self::ObservedOverExpected => "O/E",
+            Self::Pearson => "Pearson",
         }
     }
 
@@ -88,7 +94,8 @@ impl MatrixType {
         match self {
             Self::Observed => Self::Expected,
             Self::Expected => Self::ObservedOverExpected,
-            Self::ObservedOverExpected => Self::Observed,
+            Self::ObservedOverExpected => Self::Pearson,
+            Self::Pearson => Self::Observed,
         }
     }
 }
@@ -227,6 +234,7 @@ fn worker_loop(
     let mut normalization_cache: HashMap<(Normalization, u32, u32), Arc<Vec<f64>>> = HashMap::new();
     let mut expected_cache: HashMap<(Normalization, u32), Arc<ExpectedValueVector>> =
         HashMap::new();
+    let mut pearson_cache = PearsonCache::default();
 
     loop {
         let next = {
@@ -250,6 +258,7 @@ fn worker_loop(
             &mut cache,
             &mut normalization_cache,
             &mut expected_cache,
+            &mut pearson_cache,
             &sender,
         ) {
             Ok(Some(completed_viewport)) => {
@@ -287,34 +296,81 @@ fn build_tile_streaming(
     cache: &mut BlockCache,
     normalization_cache: &mut HashMap<(Normalization, u32, u32), Arc<Vec<f64>>>,
     expected_cache: &mut HashMap<(Normalization, u32), Arc<ExpectedValueVector>>,
+    pearson_cache: &mut PearsonCache,
     sender: &Sender<Result<TileResult, String>>,
 ) -> Result<Option<GenomeViewport>> {
     let started = Instant::now();
     let generation = request.viewport.generation;
     let assembly_map = request.assembly_map.as_deref();
-    let zoom = choose_zoom(matrix, request.viewport.span_bp / f64::from(OUTPUT_SIZE))
-        .context("matrix has no base-pair zoom")?;
+    let zoom = if request.matrix_type == MatrixType::Pearson {
+        choose_pearson_zoom(
+            matrix,
+            request.viewport.span_bp / f64::from(OUTPUT_SIZE),
+            request.viewport.genome_length_bp,
+        )
+        .context("matrix has no Pearson-compatible base-pair zoom within the memory budget")?
+    } else {
+        choose_zoom(matrix, request.viewport.span_bp / f64::from(OUTPUT_SIZE))
+            .context("matrix has no base-pair zoom")?
+    };
     // Expected uses the footer vector directly; no per-bin normalization
     // vector is needed to build its dense diagonal field.  Observed and O/E
     // retain Java's normalized-contact calculation before rasterization.
-    let normalization_vector = (request.matrix_type != MatrixType::Expected)
-        .then(|| {
-            normalization_vector(
-                file,
-                matrix.chromosome_1,
-                request.normalization,
-                normalization_cache,
-                request.viewport.span_bp / f64::from(OUTPUT_SIZE),
-                matrix,
-            )
-        })
-        .transpose()?
-        .flatten();
+    let normalization_vector = matches!(
+        request.matrix_type,
+        MatrixType::Observed | MatrixType::ObservedOverExpected
+    )
+    .then(|| {
+        normalization_vector(
+            file,
+            matrix.chromosome_1,
+            request.normalization,
+            normalization_cache,
+            request.viewport.span_bp / f64::from(OUTPUT_SIZE),
+            matrix,
+        )
+    })
+    .transpose()?
+    .flatten();
     let expected_vector = (request.matrix_type != MatrixType::Observed)
         .then(|| expected_vector(file, request.normalization, zoom.bin_size, expected_cache))
         .transpose()?;
     let rendered_viewport = rendered_viewport_for(request.viewport);
     let bin_bounds = viewport_bin_bounds(rendered_viewport, zoom.bin_size);
+    if request.matrix_type == MatrixType::Pearson {
+        let pearson = pearson_matrix(
+            file,
+            matrix,
+            zoom,
+            request.normalization,
+            expected_vector
+                .as_deref()
+                .context("Pearson expected values are unavailable")?,
+            pearson_cache,
+            latest_generation,
+            generation,
+        )?;
+        let Some(pearson) = pearson else {
+            return Ok(None);
+        };
+        let raw_values = rasterize_dense_pearson(&pearson, bin_bounds, zoom.bin_size, assembly_map);
+        send_stream_result(
+            sender,
+            &request,
+            rendered_viewport,
+            zoom.bin_size,
+            &raw_values,
+            0,
+            0,
+            0,
+            0,
+            0,
+            true,
+            None,
+            started,
+        )?;
+        return Ok(Some(rendered_viewport));
+    }
     if request.matrix_type == MatrixType::Expected {
         let expected = expected_vector
             .as_deref()
@@ -495,7 +551,9 @@ fn send_stream_result(
     // transforms (normalization and O/E) belong above, while display-only
     // scaling belongs in the shader/color range. Applying ln(1+x) here made
     // Observed, Expected, and O/E numerically different from Java.
-    let color_max = if complete {
+    let color_max = if request.matrix_type == MatrixType::Pearson {
+        1.0
+    } else if complete {
         let full = IntensityTile::new(
             TileKey {
                 dataset: 1,
@@ -609,6 +667,7 @@ fn accumulate_block(
                     bin_y,
                 )?,
                 MatrixType::Expected => unreachable!("expected tiles do not read sparse contacts"),
+                MatrixType::Pearson => unreachable!("Pearson tiles use the dense matrix path"),
             };
             Some((bin_x, bin_y, counts))
         }),
@@ -652,6 +711,7 @@ fn matrix_type_id(matrix_type: MatrixType) -> u32 {
         MatrixType::Observed => 0,
         MatrixType::Expected => 1,
         MatrixType::ObservedOverExpected => 2,
+        MatrixType::Pearson => 3,
     }
 }
 
@@ -665,6 +725,144 @@ fn observed_over_expected(
     let distance = u64::from((mapped_bin_x - mapped_bin_y).unsigned_abs());
     let score = f64::from(record.counts) / expected.value_for(chromosome, distance)?;
     score.is_finite().then_some(score as f32)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Pearson construction needs dataset metadata, scientific inputs, cache state, and cooperative cancellation"
+)]
+fn pearson_matrix(
+    file: &HicFile,
+    matrix: &Matrix,
+    zoom: &MatrixZoom,
+    normalization: Normalization,
+    expected: &ExpectedValueVector,
+    cache: &mut PearsonCache,
+    latest_generation: &AtomicU64,
+    generation: u64,
+) -> Result<Option<Arc<PearsonMatrix>>> {
+    if matrix.chromosome_1 != matrix.chromosome_2 {
+        anyhow::bail!("Pearson is only defined for intra-chromosomal matrices");
+    }
+    let key = (normalization, zoom.bin_size);
+    if let Some(matrix) = cache.get(key) {
+        return Ok(Some(matrix));
+    }
+    // Retain only the active Pearson matrix. Drop an incompatible entry before
+    // allocating the next dense O/E buffer so repeated normalization/LOD
+    // changes cannot accumulate hundreds of MiB for the worker lifetime.
+    cache.remove_if_different(key);
+    let chromosome = file
+        .header
+        .chromosomes
+        .get(matrix.chromosome_1 as usize)
+        .context("matrix chromosome is outside the header dictionary")?;
+    let dimension = usize::try_from(chromosome.length / u64::from(zoom.bin_size) + 1)?;
+    let cells = dimension
+        .checked_mul(dimension)
+        .context("Pearson matrix dimensions overflow")?;
+    if cells > MAX_PEARSON_CELLS {
+        anyhow::bail!(
+            "Pearson matrix contains {} cells, exceeding the safety limit {}",
+            cells,
+            MAX_PEARSON_CELLS
+        );
+    }
+    let mut oe = vec![0.0_f64; cells];
+    let mut valid = vec![false; dimension];
+    // Match MatrixZoomData.populateOEMatrixAndBitset exactly: the selected
+    // normalization only changes the expected-value vector. Java still feeds
+    // raw/NONE contact records into the dense O/E matrix.
+    for &block_number in zoom.blocks.keys() {
+        if is_stale(latest_generation, generation) {
+            return Ok(None);
+        }
+        for record in file.read_block(zoom, block_number)? {
+            if record.counts.is_nan() {
+                continue;
+            }
+            let Ok(x) = usize::try_from(record.bin_x) else {
+                continue;
+            };
+            let Ok(y) = usize::try_from(record.bin_y) else {
+                continue;
+            };
+            if x >= dimension || y >= dimension {
+                continue;
+            }
+            let distance = u64::from((record.bin_x - record.bin_y).unsigned_abs());
+            let Some(expected_count) = expected.value_for(matrix.chromosome_1, distance) else {
+                continue;
+            };
+            let value = f64::from(record.counts) / expected_count;
+            oe[x * dimension + y] = value;
+            oe[y * dimension + x] = value;
+            valid[x] = true;
+            valid[y] = true;
+        }
+    }
+    let matrix = match compute_java_pearsons_cancellable(
+        oe,
+        dimension,
+        &valid,
+        MAX_BLOCK_READ_CONCURRENCY,
+        &|| is_stale(latest_generation, generation),
+    ) {
+        Ok(matrix) => Arc::new(matrix),
+        Err(PearsonError::Cancelled) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if is_stale(latest_generation, generation) {
+        return Ok(None);
+    }
+    cache.insert(key, Arc::clone(&matrix));
+    Ok(Some(matrix))
+}
+
+fn rasterize_dense_pearson(
+    matrix: &PearsonMatrix,
+    bin_bounds: [i32; 4],
+    bin_size: u32,
+    assembly_map: Option<&AssemblyCoordinateMap>,
+) -> Vec<f32> {
+    let output_size = OUTPUT_SIZE as usize;
+    let width_bins = (bin_bounds[2] - bin_bounds[0] + 1).max(1) as usize;
+    let height_bins = (bin_bounds[3] - bin_bounds[1] + 1).max(1) as usize;
+    let mut values = vec![f32::NAN; output_size * output_size];
+    for y in 0..output_size {
+        let source_y =
+            bin_bounds[1] + i32::try_from((y * height_bins) / output_size).unwrap_or(i32::MAX);
+        for x in 0..output_size {
+            let source_x =
+                bin_bounds[0] + i32::try_from((x * width_bins) / output_size).unwrap_or(i32::MAX);
+            let Some(source_y) = dense_source_bin(source_y, bin_size, assembly_map) else {
+                continue;
+            };
+            let Some(source_x) = dense_source_bin(source_x, bin_size, assembly_map) else {
+                continue;
+            };
+            if let Some(value) = matrix.get(source_y, source_x) {
+                values[y * output_size + x] = value;
+            }
+        }
+    }
+    values
+}
+
+fn dense_source_bin(
+    displayed_bin: i32,
+    bin_size: u32,
+    assembly_map: Option<&AssemblyCoordinateMap>,
+) -> Option<usize> {
+    let displayed_bin = u64::try_from(displayed_bin).ok()?;
+    let bin_size = u64::from(bin_size);
+    let displayed_coordinate = displayed_bin.checked_mul(bin_size)?;
+    let source_coordinate = assembly_map
+        .map(|map| {
+            map.assembly_to_source(displayed_coordinate.min(map.total_length().saturating_sub(1)))
+        })
+        .unwrap_or(Some(displayed_coordinate))?;
+    usize::try_from(source_coordinate / bin_size).ok()
 }
 
 fn expected_vector(
@@ -984,6 +1182,34 @@ fn choose_zoom(matrix: &Matrix, target_bp_per_pixel: f64) -> Option<&MatrixZoom>
         })
 }
 
+fn choose_pearson_zoom(
+    matrix: &Matrix,
+    target_bp_per_pixel: f64,
+    genome_length_bp: f64,
+) -> Option<&MatrixZoom> {
+    matrix
+        .zooms
+        .iter()
+        .filter(|zoom| {
+            if zoom.unit != MatrixUnit::BasePairs || zoom.bin_size < MIN_PEARSON_BIN_SIZE_BP {
+                return false;
+            }
+            let dimension = (genome_length_bp / f64::from(zoom.bin_size)).floor() as usize + 1;
+            dimension
+                .checked_mul(dimension)
+                .is_some_and(|cells| cells <= MAX_PEARSON_CELLS)
+        })
+        .min_by(|left, right| {
+            let left_distance = (f64::from(left.bin_size) / target_bp_per_pixel.max(1.0))
+                .ln()
+                .abs();
+            let right_distance = (f64::from(right.bin_size) / target_bp_per_pixel.max(1.0))
+                .ln()
+                .abs();
+            left_distance.total_cmp(&right_distance)
+        })
+}
+
 fn viewport_bin_bounds(viewport: GenomeViewport, bin_size: u32) -> [i32; 4] {
     let bounds = viewport.bounds_bp();
     let maximum_bin = (viewport.genome_length_bp / f64::from(bin_size)).ceil() as i32 - 1;
@@ -1008,6 +1234,39 @@ fn expand_bounds_by_block_rings(bounds: [i32; 4], zoom: &MatrixZoom, rings: i32)
 
 fn is_stale(latest_generation: &AtomicU64, generation: u64) -> bool {
     latest_generation.load(Ordering::Acquire) != generation
+}
+
+#[derive(Default)]
+struct PearsonCache {
+    entry: Option<((Normalization, u32), Arc<PearsonMatrix>)>,
+}
+
+impl PearsonCache {
+    fn get(&self, key: (Normalization, u32)) -> Option<Arc<PearsonMatrix>> {
+        self.entry
+            .as_ref()
+            .filter(|(cached_key, _)| *cached_key == key)
+            .map(|(_, matrix)| Arc::clone(matrix))
+    }
+
+    fn remove_if_different(&mut self, key: (Normalization, u32)) {
+        if self
+            .entry
+            .as_ref()
+            .is_some_and(|(cached_key, _)| *cached_key != key)
+        {
+            self.entry = None;
+        }
+    }
+
+    fn insert(&mut self, key: (Normalization, u32), matrix: Arc<PearsonMatrix>) {
+        self.entry = Some((key, matrix));
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        usize::from(self.entry.is_some())
+    }
 }
 
 struct CachedBlock {
@@ -1361,5 +1620,65 @@ mod tests {
         assert_eq!(values[0], 4.0);
         assert_eq!(values[1], 4.0);
         assert_eq!(values[OUTPUT_SIZE as usize], 4.0);
+    }
+
+    #[test]
+    fn dense_pearson_raster_follows_assembly_coordinates() {
+        let document = AssemblyDocument::parse(">a 1 10\n>b 2 10\n-2 1\n").unwrap();
+        let map = document.coordinate_map().unwrap();
+        let matrix = PearsonMatrix {
+            dimension: 4,
+            values: (0..16).map(|value| value as f32).collect(),
+        };
+        let raster = rasterize_dense_pearson(&matrix, [0, 0, 3, 3], 5, Some(&map));
+        // Displayed assembly bin zero is the last source bin because scaffold
+        // 2 is reversed and placed first.
+        assert_eq!(raster[0], matrix.values[3 * 4 + 3]);
+        assert_eq!(dense_source_bin(1, 5, Some(&map)), Some(2));
+    }
+
+    #[test]
+    fn pearson_lod_never_selects_a_dense_matrix_above_the_memory_budget() {
+        let zoom = |bin_size| MatrixZoom {
+            unit: MatrixUnit::BasePairs,
+            bin_size,
+            sum_counts: 0.0,
+            occupied_cell_count: 0.0,
+            standard_deviation: 0.0,
+            percentile_95: 0.0,
+            block_bin_count: 1,
+            block_column_count: 1,
+            blocks: BTreeMap::new(),
+        };
+        let matrix = Matrix {
+            chromosome_1: 1,
+            chromosome_2: 1,
+            zooms: vec![zoom(50_000), zoom(100_000), zoom(1_000_000)],
+        };
+        let chosen = choose_pearson_zoom(&matrix, 50_000.0, 1_000_000_000.0).unwrap();
+        assert_eq!(chosen.bin_size, 1_000_000);
+    }
+
+    #[test]
+    fn pearson_cache_retains_only_the_active_normalization_and_resolution() {
+        let matrix = |value| {
+            Arc::new(PearsonMatrix {
+                dimension: 1,
+                values: vec![value],
+            })
+        };
+        let mut cache = PearsonCache::default();
+        let first_key = (Normalization::None, 1_000_000);
+        let second_key = (Normalization::Kr, 2_500_000);
+        cache.insert(first_key, matrix(1.0));
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.get(first_key).unwrap().values, vec![1.0]);
+
+        cache.remove_if_different(second_key);
+        assert_eq!(cache.len(), 0);
+        cache.insert(second_key, matrix(2.0));
+        assert_eq!(cache.len(), 1);
+        assert!(cache.get(first_key).is_none());
+        assert_eq!(cache.get(second_key).unwrap().values, vec![2.0]);
     }
 }

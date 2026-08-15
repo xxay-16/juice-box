@@ -31,7 +31,7 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & $javac --release 25 -encoding UTF-8 -cp $JavaJar -d $probeRoot (Join-Path $root "src/juicebox/tools/utils/dev/HiCExpectedFingerprint.java")
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-& $javac --release 25 -encoding UTF-8 -cp $JavaJar -d $probeRoot (Join-Path $root "src/juicebox/tools/utils/dev/HiCExpectedFingerprint.java")
+& $javac --release 25 -encoding UTF-8 -cp $JavaJar -d $probeRoot (Join-Path $root "src/juicebox/tools/utils/dev/HiCPearsonFingerprint.java")
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $java = & $javaExe -cp "$JavaJar;$probeRoot" juicebox.tools.utils.dev.HiCReaderFingerprint $HicFile 1_1
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -155,6 +155,35 @@ foreach ($key in $javaExpectedRows.Keys) {
         throw "Expected-value mismatch at ${key}: Rust=$($rustExpectedRows[$key] -join ',') Java=$($javaExpectedRows[$key] -join ',')"
     }
     Write-Output "Expected match: $key | values=$($javaExpectedRows[$key][0]) factors=$($javaExpectedRows[$key][3]) fingerprint=$($javaExpectedRows[$key][7])"
+}
+
+$pearsonBinSizes = "2500000,1000000"
+$rustPearson = cargo run -q -p heatmap-wgpu --bin hic-pearson-info -- $HicFile 1_1 $pearsonBinSizes
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$javaPearson = & $javaExe -Xmx6g -cp "$JavaJar;$probeRoot" juicebox.tools.utils.dev.HiCPearsonFingerprint $HicFile 1_1 $pearsonBinSizes
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$rustPearsonRows = @{}
+foreach ($line in $rustPearson) {
+    if ($line -match 'norm=(\S+) bin_size=(\d+) dim=(\d+) finite=(\d+) nan=(\d+) infinite=(\d+) sum=([0-9.Ee+-]+) fingerprint=([0-9a-f]+) sample_0_0=([0-9a-f]+) sample_mid_mid=([0-9a-f]+) sample_0_mid=([0-9a-f]+)') {
+        $key = "$($matches[1])_$($matches[2])"
+        $rustPearsonRows[$key] = @([int64]$matches[3], [int64]$matches[4], [int64]$matches[5], [int64]$matches[6], [math]::Round([double]$matches[7], 9), $matches[8], $matches[9], $matches[10], $matches[11])
+    }
+}
+$javaPearsonRows = @{}
+foreach ($line in $javaPearson) {
+    if ($line -match 'norm=(\S+) bin_size=(\d+) dim=(\d+) finite=(\d+) nan=(\d+) infinite=(\d+) sum=([0-9.Ee+-]+) fingerprint=([0-9a-f]+) sample_0_0=([0-9a-f]+) sample_mid_mid=([0-9a-f]+) sample_0_mid=([0-9a-f]+)') {
+        $key = "$($matches[1])_$($matches[2])"
+        $javaPearsonRows[$key] = @([int64]$matches[3], [int64]$matches[4], [int64]$matches[5], [int64]$matches[6], [math]::Round([double]$matches[7], 9), $matches[8], $matches[9], $matches[10], $matches[11])
+    }
+}
+if ($rustPearsonRows.Count -eq 0 -or $rustPearsonRows.Count -ne $javaPearsonRows.Count) {
+    throw "Rust/Java Pearson comparison did not produce the same number of rows"
+}
+foreach ($key in $javaPearsonRows.Keys) {
+    if (!$rustPearsonRows.ContainsKey($key) -or @(Compare-Object $rustPearsonRows[$key] $javaPearsonRows[$key]).Count -ne 0) {
+        throw "Pearson mismatch at ${key}: Rust=$($rustPearsonRows[$key] -join ',') Java=$($javaPearsonRows[$key] -join ',')"
+    }
+    Write-Output "Pearson match: $key | dim=$($javaPearsonRows[$key][0]) finite=$($javaPearsonRows[$key][1]) fingerprint=$($javaPearsonRows[$key][5])"
 }
 
 cargo run -q -p assembly-core --bin assembly-info -- $AssemblyFile

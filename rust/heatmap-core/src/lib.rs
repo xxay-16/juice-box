@@ -1,5 +1,222 @@
 //! Framework-neutral heatmap viewport and scalar-tile types.
 
+use std::fmt;
+
+/// Maximum dense Pearson input accepted by the core.  Pearson is inherently
+/// quadratic in chromosome-bin count; bounding the number of cells prevents a
+/// malformed request from turning into an uncontrolled allocation while still
+/// covering the resolutions Juicebox exposes for normal chromosome views.
+pub const MAX_PEARSON_CELLS: usize = 64 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PearsonError {
+    Empty,
+    DimensionOverflow,
+    InvalidMatrixLength { expected: usize, actual: usize },
+    InvalidValidityLength { expected: usize, actual: usize },
+    CellLimitExceeded { cells: usize, limit: usize },
+    Cancelled,
+}
+
+impl fmt::Display for PearsonError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => formatter.write_str("Pearson matrix dimension must be positive"),
+            Self::DimensionOverflow => formatter.write_str("Pearson matrix dimensions overflow"),
+            Self::InvalidMatrixLength { expected, actual } => write!(
+                formatter,
+                "Pearson O/E matrix contains {actual} cells; expected {expected}"
+            ),
+            Self::InvalidValidityLength { expected, actual } => write!(
+                formatter,
+                "Pearson validity mask contains {actual} entries; expected {expected}"
+            ),
+            Self::CellLimitExceeded { cells, limit } => write!(
+                formatter,
+                "Pearson matrix contains {cells} cells, exceeding the safety limit {limit}"
+            ),
+            Self::Cancelled => formatter.write_str("Pearson computation was superseded"),
+        }
+    }
+}
+
+impl std::error::Error for PearsonError {}
+
+#[derive(Debug, Clone)]
+pub struct PearsonMatrix {
+    pub dimension: usize,
+    pub values: Vec<f32>,
+}
+
+impl PearsonMatrix {
+    pub fn get(&self, row: usize, column: usize) -> Option<f32> {
+        (row < self.dimension && column < self.dimension)
+            .then(|| self.values[row * self.dimension + column])
+    }
+}
+
+/// Reproduces `Pearsons.computePearsons` and
+/// `PearsonCorrelationMetric.corr` from the Java application.
+///
+/// The Java implementation names its first step "subtract row means", but
+/// subtracts `rowMeans[column]` from every valid row.  The distinction matters
+/// for byte-for-byte scientific comparison, so it is preserved here.  Zeros
+/// participate in both means and correlations; only NaNs are omitted from the
+/// preliminary means, exactly as in Java.
+pub fn compute_java_pearsons(
+    observed_over_expected: Vec<f64>,
+    dimension: usize,
+    valid_bins: &[bool],
+    worker_count: usize,
+) -> Result<PearsonMatrix, PearsonError> {
+    compute_java_pearsons_cancellable(
+        observed_over_expected,
+        dimension,
+        valid_bins,
+        worker_count,
+        &|| false,
+    )
+}
+
+/// Java-compatible Pearson computation with cooperative cancellation.
+///
+/// The callback is checked before and during every quadratic phase so a newer
+/// viewport or MatrixType request can supersede expensive work without waiting
+/// for the full dense matrix to finish.
+pub fn compute_java_pearsons_cancellable<C>(
+    mut observed_over_expected: Vec<f64>,
+    dimension: usize,
+    valid_bins: &[bool],
+    worker_count: usize,
+    cancelled: &C,
+) -> Result<PearsonMatrix, PearsonError>
+where
+    C: Fn() -> bool + Sync,
+{
+    if dimension == 0 {
+        return Err(PearsonError::Empty);
+    }
+    let cells = dimension
+        .checked_mul(dimension)
+        .ok_or(PearsonError::DimensionOverflow)?;
+    if cells > MAX_PEARSON_CELLS {
+        return Err(PearsonError::CellLimitExceeded {
+            cells,
+            limit: MAX_PEARSON_CELLS,
+        });
+    }
+    if observed_over_expected.len() != cells {
+        return Err(PearsonError::InvalidMatrixLength {
+            expected: cells,
+            actual: observed_over_expected.len(),
+        });
+    }
+    if valid_bins.len() != dimension {
+        return Err(PearsonError::InvalidValidityLength {
+            expected: dimension,
+            actual: valid_bins.len(),
+        });
+    }
+
+    let mut row_means = vec![0.0_f64; dimension];
+    for row in 0..dimension {
+        if cancelled() {
+            return Err(PearsonError::Cancelled);
+        }
+        if !valid_bins[row] {
+            continue;
+        }
+        let values = &observed_over_expected[row * dimension..(row + 1) * dimension];
+        let mut sum = 0.0;
+        let mut count = 0_usize;
+        for &value in values {
+            if !value.is_nan() {
+                sum += value;
+                count += 1;
+            }
+        }
+        if count != 0 {
+            row_means[row] = sum / count as f64;
+        }
+    }
+    for row in 0..dimension {
+        if cancelled() {
+            return Err(PearsonError::Cancelled);
+        }
+        if valid_bins[row] {
+            for column in 0..dimension {
+                observed_over_expected[row * dimension + column] -= row_means[column];
+            }
+        }
+    }
+
+    let mut values = vec![f32::NAN; cells];
+    let workers = worker_count.max(1).min(dimension);
+    let rows_per_worker = dimension.div_ceil(workers);
+    std::thread::scope(|scope| {
+        for (chunk_index, rows) in values.chunks_mut(rows_per_worker * dimension).enumerate() {
+            let first_row = chunk_index * rows_per_worker;
+            let centered = &observed_over_expected;
+            scope.spawn(move || {
+                let row_count = rows.len() / dimension;
+                for local_row in 0..row_count {
+                    let row = first_row + local_row;
+                    if !valid_bins[row] {
+                        continue;
+                    }
+                    rows[local_row * dimension + row] = 1.0;
+                    for column in row + 1..dimension {
+                        if cancelled() {
+                            return;
+                        }
+                        if valid_bins[column] {
+                            rows[local_row * dimension + column] = java_correlation(
+                                &centered[row * dimension..(row + 1) * dimension],
+                                &centered[column * dimension..(column + 1) * dimension],
+                            )
+                                as f32;
+                        }
+                    }
+                }
+            });
+        }
+    });
+    if cancelled() {
+        return Err(PearsonError::Cancelled);
+    }
+    for row in 0..dimension {
+        if cancelled() {
+            return Err(PearsonError::Cancelled);
+        }
+        for column in row + 1..dimension {
+            values[column * dimension + row] = values[row * dimension + column];
+        }
+    }
+    Ok(PearsonMatrix { dimension, values })
+}
+
+fn java_correlation(left: &[f64], right: &[f64]) -> f64 {
+    let mut sum_left = 0.0;
+    let mut sum_right = 0.0;
+    for index in 0..left.len() {
+        sum_left += left[index];
+        sum_right += right[index];
+    }
+    let mean_left = sum_left / left.len() as f64;
+    let mean_right = sum_right / left.len() as f64;
+    let mut dot_product = 0.0;
+    let mut norm_left = 0.0;
+    let mut norm_right = 0.0;
+    for index in 0..left.len() {
+        let normalized_left = left[index] - mean_left;
+        let normalized_right = right[index] - mean_right;
+        dot_product += normalized_left * normalized_right;
+        norm_left += normalized_left * normalized_left;
+        norm_right += normalized_right * normalized_right;
+    }
+    dot_product / (norm_left * norm_right).sqrt()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TileKey {
     pub dataset: u64,
@@ -473,5 +690,65 @@ mod tests {
         assert_eq!(dirty, Some([1, 1, 8, 8]));
         assert_eq!(values[8 * 10 + 1], 1.0);
         assert_eq!(values[10 + 8], 1.0);
+    }
+
+    #[test]
+    fn java_pearsons_marks_invalid_bins_and_keeps_valid_diagonal() {
+        let matrix = compute_java_pearsons(
+            vec![2.0, 0.0, 4.0, 0.0, 0.0, 0.0, 4.0, 0.0, 8.0],
+            3,
+            &[true, false, true],
+            2,
+        )
+        .unwrap();
+        assert_eq!(matrix.get(0, 0), Some(1.0));
+        assert_eq!(matrix.get(2, 2), Some(1.0));
+        assert!(matrix.get(1, 1).unwrap().is_nan());
+        assert!(matrix.get(0, 1).unwrap().is_nan());
+        assert!(
+            matrix.get(0, 2).unwrap().is_nan() && matrix.get(2, 0).unwrap().is_nan(),
+            "proportional rows have zero variance after Java centering"
+        );
+    }
+
+    #[test]
+    fn java_pearsons_preserves_column_mean_subtraction_quirk() {
+        let matrix = compute_java_pearsons(
+            vec![1.0, 2.0, 4.0, 3.0, 8.0, 5.0, 7.0, 6.0, 9.0],
+            3,
+            &[true; 3],
+            1,
+        )
+        .unwrap();
+        assert!((matrix.get(0, 1).unwrap() - 0.114_707_865).abs() < 1.0e-6);
+        assert!((matrix.get(0, 2).unwrap() - 0.970_725_36).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn java_pearsons_rejects_unbounded_or_malformed_dense_inputs() {
+        assert!(matches!(
+            compute_java_pearsons(vec![0.0; 3], 2, &[true; 2], 1),
+            Err(PearsonError::InvalidMatrixLength {
+                expected: 4,
+                actual: 3,
+            })
+        ));
+        let dimension = (MAX_PEARSON_CELLS as f64).sqrt() as usize + 1;
+        assert!(matches!(
+            compute_java_pearsons(Vec::new(), dimension, &[], 1),
+            Err(PearsonError::CellLimitExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn java_pearsons_cooperatively_cancels_quadratic_work() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let checks = AtomicUsize::new(0);
+        let result =
+            compute_java_pearsons_cancellable(vec![1.0; 128 * 128], 128, &[true; 128], 4, &|| {
+                checks.fetch_add(1, Ordering::Relaxed) >= 8
+            });
+        assert!(matches!(result, Err(PearsonError::Cancelled)));
     }
 }

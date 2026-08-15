@@ -304,6 +304,7 @@ impl GpuState {
         displayed: GenomeViewport,
         color_range: [f32; 2],
         selected_range: Option<[u64; 2]>,
+        pearson_colors: bool,
     ) -> Result<(), wgpu::SurfaceError> {
         let requested_bounds = requested.bounds_bp();
         let displayed_bounds = displayed.bounds_bp();
@@ -316,7 +317,12 @@ impl GpuState {
         let aspect = self.config.width as f32 / self.config.height.max(1) as f32;
         let uniform = ViewUniform {
             texture_rect,
-            color_range: [color_range[0], color_range[1], 0.0, 0.0],
+            color_range: [
+                color_range[0],
+                color_range[1],
+                f32::from(pearson_colors),
+                0.0,
+            ],
             surface: [
                 aspect,
                 self.config.width as f32,
@@ -1160,6 +1166,7 @@ impl ApplicationHandler for App {
                         self.color_range,
                         self.selected_scaffold
                             .map(|placement| [placement.start, placement.end]),
+                        self.matrix_type == MatrixType::Pearson,
                     ) {
                         Ok(()) => {}
                         Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {

@@ -8,7 +8,7 @@ Assembly。
 
 - 左键拖动：平移；滚轮：以鼠标位置为中心缩放。
 - `+` / `-`：调整颜色上限；`A`：恢复自动颜色范围；`R`：重置视图。
-- `N`：循环 NONE / KR / VC / VC_SQRT；`M`：循环 Observed / Expected / O/E。
+- `N`：循环 NONE / KR / VC / VC_SQRT；`M`：循环 Observed / Expected / O/E / Pearson。
 - 右键：选择 scaffold；`I`：翻转选中 scaffold。
 - Shift+右键：把选中的 scaffold 移动到目标 scaffold 前。
 - `D`：在选中 scaffold 内设置 debris 起点；移动鼠标后再次按 `D`，把两点之间
@@ -30,5 +30,5 @@ vector 解码，以及 NONE/KR/VC/VC_SQRT 下的 Observed、Expected 和 O/E。�
 样本的 raw/normalized records、normalization vectors、expected vectors 和 O/E records
 均已逐条与 JDK 25 Java Reader 对照。动态 LOD、Assembly 顺序/方向映射和当前编辑工具
 也已接入；当前可执行顺序移动、单 scaffold 翻转、debris 提取、superscaffold 拆分/
-合并、撤销/重做和 modified assembly 保存。Control、Pearson、旧 session 和全部 Java UI 功能
+合并、撤销/重做和 modified assembly 保存。Control、旧 session 和全部 Java UI 功能
 仍由 JDK 25 主版本提供；未实现模式不能用于科研结论。

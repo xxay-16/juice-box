@@ -37,8 +37,9 @@
 1. Reader Gate：真实 `.hic` Header、Footer、Matrix、raw/normalized Block、normalization
    vector、expected vector 和 O/E record 结果对照通过。**`genome.hic` v8 的 5 档
    BP × NONE/KR/VC/VC_SQRT 已通过。**
-2. CPU Gate：raw observed 的 R32F Tile 与 PNG 参考导出已建立；Observed、dense Expected
-   和 O/E 栅格算法已有单测和逐 record Gate。Control/Pearson 仍未通过。
+2. CPU Gate：raw observed 的 R32F Tile 与 PNG 参考导出已建立；Observed、dense Expected、
+   O/E 和 Pearson 已有单测与 Java/Rust Gate。Pearson 对真实数据的 NONE/KR/VC/VC_SQRT
+   × 2.5 Mb/1 Mb 整张矩阵逐 float 位指纹一致，并已接入 GUI；Control 仍未通过。
 3. GPU Gate：真实数据拖动、缩放、调色、256 MiB CPU Block 预算、generation 取消、
    overscan 覆盖区零读取和动态 LOD已通过单机验证；显存预算、长时间运行和跨 GPU
    验收仍待完成。
@@ -61,5 +62,5 @@
 该检查会运行 Rust workspace 测试，并以 `1_1` 矩阵的每个 BP 分辨率比对
 Rust 与当前 Java Reader 的 Block/contact 指纹、NONE/KR/VC/VC_SQRT normalization
 vectors、expected vectors，以及每条 O/E record 的 float 指纹；随后解析 assembly。
-它为当前 v8 输入提供可重复证据，但不替代 v9+ 真实语料、Control/Pearson、跨 GPU、
+它为当前 v8 输入提供可重复证据，但不替代 v9+ 真实语料、Control、跨 GPU、
 长时间运行或高级多选/phase Assembly 编辑验收。

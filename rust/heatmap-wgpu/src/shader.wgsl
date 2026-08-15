@@ -61,9 +61,22 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(0.012, 0.016, 0.025, 1.0);
     }
     let intensity = textureSample(intensity_texture, intensity_sampler, texture_uv).r;
-    let normalized = (intensity - view.color_range.x)
-        / max(view.color_range.y - view.color_range.x, 0.000001);
-    var color = heat_color(normalized);
+    var color: vec3<f32>;
+    if (view.color_range.z > 0.5) {
+        if (intensity != intensity || abs(intensity) > 3.402823e38) {
+            color = vec3<f32>(0.5);
+        } else if (intensity > 0.0) {
+            color = vec3<f32>(clamp(intensity, 0.0, 1.0), 0.0, 0.0);
+        } else if (intensity < 0.0) {
+            color = vec3<f32>(0.0, 0.0, clamp(-intensity, 0.0, 1.0));
+        } else {
+            color = vec3<f32>(0.0);
+        }
+    } else {
+        let normalized = (intensity - view.color_range.x)
+            / max(view.color_range.y - view.color_range.x, 0.000001);
+        color = heat_color(normalized);
+    }
     if (view.selection.z > 0.5) {
         let start = view.selection.x;
         let end = view.selection.y;
