@@ -1861,6 +1861,32 @@ mod tests {
         let (_, control_oe_bits) =
             request_complete_tile(&engine, &mut viewport, MatrixType::ControlOverExpected);
         assert_eq!(observed_oe_bits, control_oe_bits);
+        let (_, observed_p1_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::ObservedOverExpectedP1);
+        let (_, control_p1_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::ControlOverExpectedP1);
+        assert_eq!(observed_p1_bits, control_p1_bits);
+        let (_, observed_p1_v2_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::ObservedOverExpectedP1V2);
+        assert_eq!(observed_p1_bits, observed_p1_v2_bits);
+        let (_, control_p1_v2_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::ControlOverExpectedP1V2);
+        assert_eq!(control_p1_bits, control_p1_v2_bits);
+        let (_, p1_vs_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::ObservedOverExpectedVsP1);
+        assert_eq!(observed_p1_bits, p1_vs_bits);
+        let (_, p1_vs_v2_bits) = request_complete_tile(
+            &engine,
+            &mut viewport,
+            MatrixType::ObservedOverExpectedVsP1V2,
+        );
+        assert_eq!(p1_vs_bits, p1_vs_v2_bits);
+
+        let (_, observed_log_oe_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::LogObservedExpected);
+        let (_, control_log_oe_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::LogControlExpected);
+        assert_eq!(observed_log_oe_bits, control_log_oe_bits);
 
         let (_, observed_pearson_bits) =
             request_complete_tile(&engine, &mut viewport, MatrixType::Pearson);
@@ -1946,6 +1972,15 @@ mod tests {
             request_complete_tile(&engine, &mut viewport, MatrixType::ObservedOverExpectedVs);
         assert_ne!(oe_vs_bits, observed_oe_bits);
         assert_ne!(oe_vs_bits, control_oe_bits);
+        let (_, observed_p1_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::ObservedOverExpectedP1);
+        let (_, control_p1_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::ControlOverExpectedP1);
+        assert_ne!(observed_p1_bits, control_p1_bits);
+        let (_, p1_vs_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::ObservedOverExpectedVsP1);
+        assert_ne!(p1_vs_bits, observed_p1_bits);
+        assert_ne!(p1_vs_bits, control_p1_bits);
 
         let (_, observed_pearson_bits) =
             request_complete_tile(&engine, &mut viewport, MatrixType::Pearson);

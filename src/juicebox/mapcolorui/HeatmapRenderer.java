@@ -960,7 +960,7 @@ public class HeatmapRenderer {
                             float score = (float) (Math.log(rec.getCounts() + 1) / Math.log(expected + 1));
                             if (Float.isNaN(score) || Float.isInfinite(score)) continue;
 
-                            setColor(cs.getColor(score));
+                            setScore(score, cs);
 
                             intraPainting(originX, originY, width, height, rec);
                         }
@@ -978,7 +978,7 @@ public class HeatmapRenderer {
                         float score = (float) (Math.log(rec.getCounts() + 1) / Math.log(expected + 1));
                         if (Float.isNaN(score) || Float.isInfinite(score)) continue;
 
-                        setColor(cs.getColor(score));
+                        setScore(score, cs);
 
                         interPainting(originX, originY, width, height, rec);
                     }

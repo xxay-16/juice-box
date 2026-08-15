@@ -58,6 +58,9 @@ UI adapter
 - Java 默认菜单中的 VS、Ratio/RatioV2、O/E-VS、Pearson-VS、OEV2/OECTRLV2/OEVSV2、
   LOG/LOGC/LOGEOVS；其中 V2 模式保留 O/E raw scientific values，仅由 shader 使用红蓝
   log-ratio 色阶，Log 模式按 Java float 加法与 double `Math.log` 精度生成 R32F 值；
+- advanced expected/pseudocount 第一族：OEP1/OEP1V2、OECTRLP1/OECTRLP1V2、
+  OEVSP1/OEVSP1V2，以及独立 LOGEO/LOGCEO；它们已进入 JDK 25 production raw-pixel
+  Gate，但在完整 advanced 菜单完成前不混入标准 `M` 键循环；
 - visible Block 并行解压后逐块栅格化和上传，进入视口的新区域无需等待全部 Block；
 - 真实 v8 数据的 raw/normalized Block、normalization vector、expected vector 和 O/E
   逐 record Java/Rust 指纹 Gate。

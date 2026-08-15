@@ -83,12 +83,32 @@ pub enum MatrixType {
     Expected,
     ObservedOverExpected,
     ObservedOverExpectedV2,
+    #[allow(
+        dead_code,
+        reason = "advanced mode is exercised by the production parity binary before the UI menu is complete"
+    )]
+    ObservedOverExpectedP1,
+    #[allow(
+        dead_code,
+        reason = "advanced mode is exercised by the production parity binary before the UI menu is complete"
+    )]
+    ObservedOverExpectedP1V2,
     Pearson,
     LogObserved,
     LogObservedExpected,
     Control,
     ControlOverExpected,
     ControlOverExpectedV2,
+    #[allow(
+        dead_code,
+        reason = "advanced mode is exercised by the production parity binary before the UI menu is complete"
+    )]
+    ControlOverExpectedP1,
+    #[allow(
+        dead_code,
+        reason = "advanced mode is exercised by the production parity binary before the UI menu is complete"
+    )]
+    ControlOverExpectedP1V2,
     ControlPearson,
     LogControl,
     LogControlExpected,
@@ -97,23 +117,53 @@ pub enum MatrixType {
     RatioV2,
     ObservedOverExpectedVs,
     ObservedOverExpectedVsV2,
+    #[allow(
+        dead_code,
+        reason = "advanced mode is exercised by the production parity binary before the UI menu is complete"
+    )]
+    ObservedOverExpectedVsP1,
+    #[allow(
+        dead_code,
+        reason = "advanced mode is exercised by the production parity binary before the UI menu is complete"
+    )]
+    ObservedOverExpectedVsP1V2,
     LogObservedExpectedVs,
     PearsonVs,
 }
 
 impl MatrixType {
+    /// First advanced-view family implemented behind the production parity
+    /// gate. The standard keyboard cycle remains unchanged until the complete
+    /// Java advanced menu can be exposed as one coherent UI option.
+    #[allow(
+        dead_code,
+        reason = "the primary viewer keeps the standard Java menu until the complete advanced menu is ready"
+    )]
+    pub const EXPECTED_PSEUDOCOUNT_MODES: [Self; 6] = [
+        Self::ObservedOverExpectedP1,
+        Self::ObservedOverExpectedP1V2,
+        Self::ControlOverExpectedP1,
+        Self::ControlOverExpectedP1V2,
+        Self::ObservedOverExpectedVsP1,
+        Self::ObservedOverExpectedVsP1V2,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Observed => "Observed",
             Self::Expected => "Expected",
             Self::ObservedOverExpected => "O/E",
             Self::ObservedOverExpectedV2 => "Log[Observed/Expected]",
+            Self::ObservedOverExpectedP1 => "(Observed+1)/(Expected+1)",
+            Self::ObservedOverExpectedP1V2 => "Log[(Observed+1)/(Expected+1)]",
             Self::Pearson => "Pearson",
             Self::LogObserved => "Log[Observed+1]",
             Self::LogObservedExpected => "Log[Observed+1]/Log[Expected+1]",
             Self::Control => "Control",
             Self::ControlOverExpected => "Control/ExpectedC",
             Self::ControlOverExpectedV2 => "Log[Control/ExpectedC]",
+            Self::ControlOverExpectedP1 => "(Control+1)/(ExpectedC+1)",
+            Self::ControlOverExpectedP1V2 => "Log[(Control+1)/(ExpectedC+1)]",
             Self::ControlPearson => "Control Pearson",
             Self::LogControl => "Log[Control+1]",
             Self::LogControlExpected => "Log[Control+1]/Log[ExpectedC+1]",
@@ -122,6 +172,12 @@ impl MatrixType {
             Self::RatioV2 => "Log[Observed/Control * (AvgC/AvgO)]",
             Self::ObservedOverExpectedVs => "O/E vs Control/ExpectedC",
             Self::ObservedOverExpectedVsV2 => "Log[Observed/Expected] vs Log[Control/ExpectedC]",
+            Self::ObservedOverExpectedVsP1 => {
+                "(Observed+1)/(Expected+1) vs (Control+1)/(ExpectedC+1)"
+            }
+            Self::ObservedOverExpectedVsP1V2 => {
+                "Log[(Observed+1)/(Expected+1)] vs Log[(Control+1)/(ExpectedC+1)]"
+            }
             Self::LogObservedExpectedVs => {
                 "Log[Observed+1]/Log[Expected+1] vs Log[Control+1]/Log[ExpectedC+1]"
             }
@@ -160,6 +216,12 @@ impl MatrixType {
             Self::LogControl => Self::LogObservedExpectedVs,
             Self::LogObservedExpectedVs => Self::Observed,
             Self::LogObservedExpected | Self::LogControlExpected => Self::Observed,
+            Self::ObservedOverExpectedP1
+            | Self::ObservedOverExpectedP1V2
+            | Self::ControlOverExpectedP1
+            | Self::ControlOverExpectedP1V2
+            | Self::ObservedOverExpectedVsP1
+            | Self::ObservedOverExpectedVsP1V2 => Self::Observed,
         }
     }
 
@@ -169,6 +231,8 @@ impl MatrixType {
             Self::Control
                 | Self::ControlOverExpected
                 | Self::ControlOverExpectedV2
+                | Self::ControlOverExpectedP1
+                | Self::ControlOverExpectedP1V2
                 | Self::ControlPearson
                 | Self::LogControl
                 | Self::LogControlExpected
@@ -185,8 +249,12 @@ impl MatrixType {
             Self::Expected
                 | Self::ObservedOverExpected
                 | Self::ObservedOverExpectedV2
+                | Self::ObservedOverExpectedP1
+                | Self::ObservedOverExpectedP1V2
                 | Self::ControlOverExpected
                 | Self::ControlOverExpectedV2
+                | Self::ControlOverExpectedP1
+                | Self::ControlOverExpectedP1V2
                 | Self::LogObservedExpected
                 | Self::LogControlExpected
                 | Self::Pearson
@@ -202,6 +270,8 @@ impl MatrixType {
                 | Self::RatioV2
                 | Self::ObservedOverExpectedVs
                 | Self::ObservedOverExpectedVsV2
+                | Self::ObservedOverExpectedVsP1
+                | Self::ObservedOverExpectedVsP1V2
                 | Self::LogObservedExpectedVs
                 | Self::PearsonVs
         )
@@ -214,6 +284,9 @@ impl MatrixType {
                 | Self::ObservedOverExpectedV2
                 | Self::ControlOverExpectedV2
                 | Self::ObservedOverExpectedVsV2
+                | Self::ObservedOverExpectedP1V2
+                | Self::ControlOverExpectedP1V2
+                | Self::ObservedOverExpectedVsP1V2
         )
     }
 }
@@ -532,11 +605,15 @@ fn build_tile_streaming(
         MatrixType::Observed
             | MatrixType::ObservedOverExpected
             | MatrixType::ObservedOverExpectedV2
+            | MatrixType::ObservedOverExpectedP1
+            | MatrixType::ObservedOverExpectedP1V2
             | MatrixType::LogObserved
             | MatrixType::LogObservedExpected
             | MatrixType::Control
             | MatrixType::ControlOverExpected
             | MatrixType::ControlOverExpectedV2
+            | MatrixType::ControlOverExpectedP1
+            | MatrixType::ControlOverExpectedP1V2
             | MatrixType::LogControl
             | MatrixType::LogControlExpected
     )
@@ -964,6 +1041,8 @@ fn build_comparison_tile(
         }
         MatrixType::ObservedOverExpectedVs
         | MatrixType::ObservedOverExpectedVsV2
+        | MatrixType::ObservedOverExpectedVsP1
+        | MatrixType::ObservedOverExpectedVsP1V2
         | MatrixType::LogObservedExpectedVs
         | MatrixType::PearsonVs => combine_triangles(&observed_values, &control_values),
         _ => unreachable!("comparison builder received a non-comparison MatrixType"),
@@ -994,6 +1073,10 @@ fn comparison_raster_types(matrix_type: MatrixType) -> (MatrixType, MatrixType) 
         MatrixType::ObservedOverExpectedVs | MatrixType::ObservedOverExpectedVsV2 => (
             MatrixType::ObservedOverExpected,
             MatrixType::ControlOverExpected,
+        ),
+        MatrixType::ObservedOverExpectedVsP1 | MatrixType::ObservedOverExpectedVsP1V2 => (
+            MatrixType::ObservedOverExpectedP1,
+            MatrixType::ControlOverExpectedP1,
         ),
         MatrixType::LogObservedExpectedVs => (
             MatrixType::LogObservedExpected,
@@ -1124,8 +1207,12 @@ fn rasterize_dataset(
         source_type,
         MatrixType::ObservedOverExpected
             | MatrixType::ObservedOverExpectedV2
+            | MatrixType::ObservedOverExpectedP1
+            | MatrixType::ObservedOverExpectedP1V2
             | MatrixType::ControlOverExpected
             | MatrixType::ControlOverExpectedV2
+            | MatrixType::ControlOverExpectedP1
+            | MatrixType::ControlOverExpectedP1V2
             | MatrixType::LogObservedExpected
             | MatrixType::LogControlExpected
     )
@@ -1391,8 +1478,12 @@ fn accumulate_block(
                 MatrixType::LogObserved | MatrixType::LogControl => counts.ln_1p(),
                 MatrixType::ObservedOverExpected
                 | MatrixType::ObservedOverExpectedV2
+                | MatrixType::ObservedOverExpectedP1
+                | MatrixType::ObservedOverExpectedP1V2
                 | MatrixType::ControlOverExpected
-                | MatrixType::ControlOverExpectedV2 => observed_over_expected(
+                | MatrixType::ControlOverExpectedV2
+                | MatrixType::ControlOverExpectedP1
+                | MatrixType::ControlOverExpectedP1V2 => observed_over_expected(
                     ContactRecord {
                         bin_x,
                         bin_y,
@@ -1402,6 +1493,17 @@ fn accumulate_block(
                     chromosome,
                     bin_x,
                     bin_y,
+                    if matches!(
+                        matrix_type,
+                        MatrixType::ObservedOverExpectedP1
+                            | MatrixType::ObservedOverExpectedP1V2
+                            | MatrixType::ControlOverExpectedP1
+                            | MatrixType::ControlOverExpectedP1V2
+                    ) {
+                        1.0
+                    } else {
+                        0.0
+                    },
                 )?,
                 MatrixType::LogObservedExpected | MatrixType::LogControlExpected => {
                     log_observed_expected(
@@ -1425,6 +1527,8 @@ fn accumulate_block(
                 | MatrixType::RatioV2
                 | MatrixType::ObservedOverExpectedVs
                 | MatrixType::ObservedOverExpectedVsV2
+                | MatrixType::ObservedOverExpectedVsP1
+                | MatrixType::ObservedOverExpectedVsP1V2
                 | MatrixType::LogObservedExpectedVs
                 | MatrixType::PearsonVs => {
                     unreachable!("comparison tiles use the dual-dataset path")
@@ -1489,6 +1593,12 @@ fn matrix_type_id(matrix_type: MatrixType) -> u32 {
         MatrixType::LogObservedExpected => 17,
         MatrixType::LogControlExpected => 18,
         MatrixType::LogObservedExpectedVs => 19,
+        MatrixType::ObservedOverExpectedP1 => 20,
+        MatrixType::ObservedOverExpectedP1V2 => 21,
+        MatrixType::ControlOverExpectedP1 => 22,
+        MatrixType::ControlOverExpectedP1V2 => 23,
+        MatrixType::ObservedOverExpectedVsP1 => 24,
+        MatrixType::ObservedOverExpectedVsP1V2 => 25,
     }
 }
 
@@ -1498,10 +1608,11 @@ fn observed_over_expected(
     chromosome: u32,
     mapped_bin_x: i32,
     mapped_bin_y: i32,
+    pseudo_count: f32,
 ) -> Option<f32> {
     let distance = u64::from((mapped_bin_x - mapped_bin_y).unsigned_abs());
     let expected = expected.value_for(chromosome, distance)? as f32;
-    let score = observed_over_expected_score(record.counts, expected, 0.0);
+    let score = observed_over_expected_score(record.counts, expected, pseudo_count);
     (score != 0.0).then_some(score)
 }
 
@@ -2488,7 +2599,7 @@ mod tests {
         // contact bins before HeatmapRenderer calculates abs(binX - binY), so
         // the denominator must be the distance-one entry (10 / factor 2).
         assert_eq!(
-            observed_over_expected(source_record, &expected, 1, 4, 5),
+            observed_over_expected(source_record, &expected, 1, 4, 5, 0.0),
             Some(4.0)
         );
     }
@@ -2553,6 +2664,43 @@ mod tests {
             comparison_raster_types(MatrixType::ObservedOverExpectedVsV2),
             comparison_raster_types(MatrixType::ObservedOverExpectedVs),
             "OEVSV2 reuses O/E-VS scientific rasters and changes only the colour scale"
+        );
+    }
+
+    #[test]
+    fn pseudocount_observed_expected_uses_java_plus_one_formula() {
+        let expected = ExpectedValueVector {
+            key: ExpectedValueKey {
+                normalization: "NONE".to_owned(),
+                unit: MatrixUnit::BasePairs,
+                resolution: 1,
+            },
+            values: vec![4.0],
+            chromosome_factors: std::collections::BTreeMap::from([(1, 1.0)]),
+        };
+        let record = ContactRecord {
+            bin_x: 0,
+            bin_y: 0,
+            counts: 9.0,
+        };
+        assert_eq!(
+            observed_over_expected(record, &expected, 1, 0, 0, 1.0),
+            Some(2.0)
+        );
+    }
+
+    #[test]
+    fn pseudocount_v2_modes_keep_raw_values_and_use_log_ratio_color() {
+        assert!(MatrixType::ObservedOverExpectedP1V2.uses_log_ratio_color_scale());
+        assert!(MatrixType::ControlOverExpectedP1V2.uses_log_ratio_color_scale());
+        assert!(MatrixType::ObservedOverExpectedVsP1V2.uses_log_ratio_color_scale());
+        assert!(!MatrixType::ObservedOverExpectedP1.uses_log_ratio_color_scale());
+        assert_eq!(
+            comparison_raster_types(MatrixType::ObservedOverExpectedVsP1V2),
+            (
+                MatrixType::ObservedOverExpectedP1,
+                MatrixType::ControlOverExpectedP1
+            )
         );
     }
 

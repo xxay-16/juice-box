@@ -35,7 +35,7 @@ fn main() -> Result<()> {
     let engine = TileEngine::spawn(observed, "1_1".to_owned(), None, Some(control))?;
     let mut viewport = GenomeViewport::new(chromosome.length, 1.0);
 
-    for matrix_type in [
+    let modes = [
         MatrixType::Vs,
         MatrixType::Ratio,
         MatrixType::RatioV2,
@@ -46,8 +46,13 @@ fn main() -> Result<()> {
         MatrixType::ObservedOverExpectedVsV2,
         MatrixType::LogObserved,
         MatrixType::LogControl,
+        MatrixType::LogObservedExpected,
+        MatrixType::LogControlExpected,
         MatrixType::LogObservedExpectedVs,
-    ] {
+    ]
+    .into_iter()
+    .chain(MatrixType::EXPECTED_PSEUDOCOUNT_MODES);
+    for matrix_type in modes {
         engine.update_matrix_type(matrix_type);
         viewport.generation = viewport.generation.wrapping_add(1);
         engine.request(viewport);
@@ -82,8 +87,16 @@ fn mode_name(matrix_type: MatrixType) -> &'static str {
         MatrixType::ObservedOverExpectedV2 => "OEV2",
         MatrixType::ControlOverExpectedV2 => "OECTRLV2",
         MatrixType::ObservedOverExpectedVsV2 => "OEVSV2",
+        MatrixType::ObservedOverExpectedP1 => "OEP1",
+        MatrixType::ObservedOverExpectedP1V2 => "OEP1V2",
+        MatrixType::ControlOverExpectedP1 => "OECTRLP1",
+        MatrixType::ControlOverExpectedP1V2 => "OECTRLP1V2",
+        MatrixType::ObservedOverExpectedVsP1 => "OEVSP1",
+        MatrixType::ObservedOverExpectedVsP1V2 => "OEVSP1V2",
         MatrixType::LogObserved => "LOG",
         MatrixType::LogControl => "LOGC",
+        MatrixType::LogObservedExpected => "LOGEO",
+        MatrixType::LogControlExpected => "LOGCEO",
         MatrixType::LogObservedExpectedVs => "LOGEOVS",
         _ => unreachable!(),
     }
