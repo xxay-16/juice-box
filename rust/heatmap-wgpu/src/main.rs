@@ -659,23 +659,34 @@ impl App {
         }
     }
 
-    /// Finish a drag with a request for the actual final viewport whenever the
-    /// newest submitted work was merely an earlier overscan prediction.  While
-    /// dragging that prediction is useful: it avoids replacing a worker job
-    /// for every pointer event.  On release, however, the pointer is no longer
-    /// going to generate another event which could advance the request.
+    /// Finish a drag with a request for the actual final viewport.  While
+    /// dragging, a current overscan job is a useful prediction: it avoids
+    /// replacing a worker job for every pointer event.  Once the pointer is
+    /// released, though, retaining that prediction leaves a subtle hole:
+    /// its pixels may cover the screen, yet its cache warm-up and streamed
+    /// raster still belong to an intermediate pointer position.  There is no
+    /// later input event to make the worker move its center to where the user
+    /// stopped.  Give the stopped view its own generation so newly exposed
+    /// blocks are always rasterized and displayed after a pan.
     fn request_settled_viewport(&mut self) {
         let request_is_current = self
             .in_flight_viewport
             .is_some_and(|viewport| viewport.generation == self.requested_viewport.generation);
-        if should_request_settled_viewport(
-            self.requested_viewport,
-            self.completed_viewport,
-            self.in_flight_viewport,
-            self.request_pending,
-        ) {
+        let final_view_is_complete =
+            self.completed_viewport.generation == self.requested_viewport.generation;
+        if !final_view_is_complete
+            && should_request_settled_viewport(
+                self.requested_viewport,
+                self.completed_viewport,
+                self.in_flight_viewport,
+                self.request_pending,
+            )
+        {
+            let interaction_generation = self.requested_viewport.generation;
+            self.requested_viewport.generation = self.requested_viewport.generation.wrapping_add(1);
             app_log!(
-                "tile settle requested: generation={} displayed={} in_flight_current={}",
+                "tile settle requested: interaction_generation={} final_generation={} displayed={} in_flight_current={}",
+                interaction_generation,
                 self.requested_viewport.generation,
                 self.displayed_viewport.generation,
                 request_is_current
@@ -1361,12 +1372,15 @@ fn viewport_can_serve(
 fn should_request_settled_viewport(
     requested: GenomeViewport,
     displayed: GenomeViewport,
-    in_flight: Option<GenomeViewport>,
+    _in_flight: Option<GenomeViewport>,
     request_pending: bool,
 ) -> bool {
-    request_pending
-        || (in_flight.is_none_or(|viewport| viewport.generation != requested.generation)
-            && requested.generation != displayed.generation)
+    // The result of an in-flight overscan request is useful while dragging,
+    // but it is never the terminal request for a released gesture: it may
+    // have been centered at an earlier point and can only warm cache rings
+    // around that earlier point.  Submit one final coalesced generation for
+    // the exact stopped viewport.
+    request_pending || requested.generation != displayed.generation
 }
 
 fn should_request_idle_viewport(
@@ -1773,14 +1787,14 @@ mod tests {
     }
 
     #[test]
-    fn drag_release_keeps_the_current_in_flight_request() {
+    fn drag_release_resubmits_current_in_flight_request_at_final_position() {
         let mut displayed = GenomeViewport::new(1_000, 0.6);
         displayed.generation = 3;
         let mut requested = GenomeViewport::new(1_000, 0.4);
         requested.generation = 8;
         let current_prediction = rendered_viewport_for(requested);
 
-        assert!(!should_request_settled_viewport(
+        assert!(should_request_settled_viewport(
             requested,
             displayed,
             Some(current_prediction),
