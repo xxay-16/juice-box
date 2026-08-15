@@ -88,6 +88,57 @@ pub fn rasterize_ratio_contacts(
     values
 }
 
+pub fn rasterize_difference_contacts(
+    observed: &ContactMap,
+    control: &ContactMap,
+    bin_bounds: [i32; 4],
+    output_size: u32,
+    symmetric: bool,
+    observed_average: f32,
+    control_average: f32,
+) -> Vec<f32> {
+    assert!(output_size > 0);
+    let size = output_size as usize;
+    let width_bins = (bin_bounds[2] - bin_bounds[0] + 1).max(1) as u64;
+    let height_bins = (bin_bounds[3] - bin_bounds[1] + 1).max(1) as u64;
+    let shared_average = observed_average * 0.5 + control_average * 0.5;
+    let mut values = vec![0.0; size * size];
+    let mut samples = vec![0_u32; size * size];
+    let mut add = |bin_x: i32, bin_y: i32, score: f32| {
+        if bin_x < bin_bounds[0]
+            || bin_x > bin_bounds[2]
+            || bin_y < bin_bounds[1]
+            || bin_y > bin_bounds[3]
+            || !score.is_finite()
+        {
+            return;
+        }
+        let x = (((bin_x - bin_bounds[0]) as u64 * u64::from(output_size)) / width_bins)
+            .min(u64::from(output_size) - 1) as usize;
+        let y = (((bin_y - bin_bounds[1]) as u64 * u64::from(output_size)) / height_bins)
+            .min(u64::from(output_size) - 1) as usize;
+        values[y * size + x] += score;
+        samples[y * size + x] += 1;
+    };
+    for (&(bin_x, bin_y), &observed_count) in observed {
+        let Some(&control_count) = control.get(&(bin_x, bin_y)) else {
+            continue;
+        };
+        let score =
+            (observed_count / observed_average - control_count / control_average) * shared_average;
+        add(bin_x, bin_y, score);
+        if symmetric && bin_x != bin_y {
+            add(bin_y, bin_x, score);
+        }
+    }
+    for (value, count) in values.iter_mut().zip(samples) {
+        if count != 0 {
+            *value /= count as f32;
+        }
+    }
+    values
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,5 +167,14 @@ mod tests {
         control.insert((2, 2), 5.0);
         let ratio = rasterize_ratio_contacts(&observed, &control, [0, 0, 2, 2], 3, true, 2.0, 4.0);
         assert_eq!(ratio, [1.0, 4.0, 0.0, 4.0, 0.5, 1.0, 0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn difference_fixture_uses_only_paired_contacts_and_java_average_scaling() {
+        let observed = ContactMap::from([((0, 0), 8.0), ((0, 1), 6.0), ((1, 1), 5.0)]);
+        let control = ContactMap::from([((0, 0), 4.0), ((0, 1), 8.0), ((1, 2), 9.0)]);
+        let values =
+            rasterize_difference_contacts(&observed, &control, [0, 0, 1, 1], 2, true, 4.0, 2.0);
+        assert_eq!(values, [0.0, -7.5, -7.5, 0.0]);
     }
 }

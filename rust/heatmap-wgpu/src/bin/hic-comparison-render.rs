@@ -51,7 +51,8 @@ fn main() -> Result<()> {
         MatrixType::LogObservedExpectedVs,
     ]
     .into_iter()
-    .chain(MatrixType::EXPECTED_PSEUDOCOUNT_MODES);
+    .chain(MatrixType::EXPECTED_PSEUDOCOUNT_MODES)
+    .chain(MatrixType::EXPECTED_TRANSFORM_MODES);
     for matrix_type in modes {
         engine.update_matrix_type(matrix_type);
         viewport.generation = viewport.generation.wrapping_add(1);
@@ -98,6 +99,10 @@ fn mode_name(matrix_type: MatrixType) -> &'static str {
         MatrixType::LogObservedExpected => "LOGEO",
         MatrixType::LogControlExpected => "LOGCEO",
         MatrixType::LogObservedExpectedVs => "LOGEOVS",
+        MatrixType::ExpLogObservedExpected => "EXPLOGEO",
+        MatrixType::ExpLogControlExpected => "EXPLOGCEO",
+        MatrixType::ObservedMinusExpectedVs => "OCMEVS",
+        MatrixType::Difference => "DIFF",
         _ => unreachable!(),
     }
 }

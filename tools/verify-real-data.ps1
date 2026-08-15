@@ -41,7 +41,8 @@ $comparisonModes = @(
     "VS", "RATIO", "RATIOV2", "OEVS", "PEARSONVS",
     "OEV2", "OECTRLV2", "OEVSV2",
     "OEP1", "OEP1V2", "OECTRLP1", "OECTRLP1V2", "OEVSP1", "OEVSP1V2",
-    "LOG", "LOGC", "LOGEO", "LOGCEO", "LOGEOVS"
+    "LOG", "LOGC", "LOGEO", "LOGCEO", "LOGEOVS",
+    "EXPLOGEO", "EXPLOGCEO", "OCMEVS", "DIFF"
 )
 $comparisonHicRoot = Join-Path $root "__artifacts_temp/comparison-hic"
 New-Item -ItemType Directory -Force $comparisonHicRoot | Out-Null
@@ -61,7 +62,7 @@ $env:JUICEBOX_ASYMMETRIC_OBSERVED_HIC = $comparisonObservedHic
 $env:JUICEBOX_ASYMMETRIC_CONTROL_HIC = $comparisonControlHic
 cargo test -q -p heatmap-wgpu real_distinct_control_fixture_exercises_dual_reader_comparison_modes -- --ignored
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-Write-Output "Distinct control fixture rendered: standard modes plus OEP1/OECTRLP1/OEVSP1, their V2 variants, LOGEO, and LOGCEO"
+Write-Output "Distinct control fixture rendered: standard modes plus expected pseudocount and transform/subtraction modes"
 $javaRenderComparison = & $javaExe -cp "$probeRoot;$JavaJar" `
     juicebox.tools.utils.dev.HiCComparisonRenderFingerprint `
     $comparisonObservedHic $comparisonControlHic

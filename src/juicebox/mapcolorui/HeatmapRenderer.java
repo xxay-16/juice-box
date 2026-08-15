@@ -501,7 +501,7 @@ public class HeatmapRenderer {
                         float den = ctrlRecord.getCounts() / ctrlAverageCount;
                         float score = (num - den) * averageAcrossMapAndControl;
                         if (Float.isNaN(score) || Float.isInfinite(score)) continue;
-                        setColor(cs.getColor(score));
+                        setScore(score, cs);
                         intraPainting2(originX, originY, width, height, sameChr, rec);
                     }
                 }
@@ -724,7 +724,7 @@ public class HeatmapRenderer {
                             float score = (float) Math.exp((Math.log(rec.getCounts() + 1) / Math.log(expected + 1)));
                             if (Float.isNaN(score) || Float.isInfinite(score)) continue;
 
-                            setColor(cs.getColor(score));
+                            setScore(score, cs);
 
                             intraPainting(originX, originY, width, height, rec);
                         }
@@ -742,7 +742,7 @@ public class HeatmapRenderer {
                         float score = (float) Math.exp((Math.log(rec.getCounts() + 1) / Math.log(expected + 1)));
                         if (Float.isNaN(score) || Float.isInfinite(score)) continue;
 
-                        setColor(cs.getColor(score));
+                        setScore(score, cs);
 
                         interPainting(originX, originY, width, height, rec);
                     }
@@ -793,7 +793,7 @@ public class HeatmapRenderer {
 
                         float expected = getExpectedValue(df, chr1, rec);
                         score = rec.getCounts() - expected;
-                        setColor(cs.getColor(score));
+                        setScore(score, cs);
 
                         aboveDiagonalPainting(originX, originY, width, height, rec);
                     }
@@ -816,7 +816,7 @@ public class HeatmapRenderer {
                             float expected = getExpectedValue(controlDF, chr1, rec);
                             score = rec.getCounts() - expected;
 
-                            setColor(cs.getColor(score));
+                            setScore(score, cs);
                             belowDiagonalPainting(originX, originY, width, height, rec);
                         }
                     }
