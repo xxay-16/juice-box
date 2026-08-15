@@ -41,7 +41,10 @@
    O/E 和 Pearson 已有单测与 Java/Rust Gate。Pearson 对真实数据的 NONE/KR/VC/VC_SQRT
    × 2.5 Mb/1 Mb 整张矩阵逐 float 位指纹一致，并已接入 GUI。Control 双 reader、
    独立 cache/normalization、Control/ExpectedC 与 Control Pearson 已通过同文件 identity
-   垂直切片；真实第二 control 数据集及比较型 MatrixType 仍未通过。
+   垂直切片；首批 VS、RATIO/RATIOV2、OEVS、PEARSONVS 已通过同文件不变量 Gate、
+   非对称 JDK 25 production renderer 有序像素网格 Gate（36 格 raw float bits，覆盖
+   坐标、漏格和最终覆盖），以及 Java `pre` 动态生成的不同 v9 observed/control 双 reader
+   Gate。其余比较型 MatrixType 仍未通过。
 3. GPU Gate：真实数据拖动、缩放、调色、256 MiB CPU Block 预算、generation 取消、
    overscan 覆盖区零读取和动态 LOD已通过单机验证；显存预算、长时间运行和跨 GPU
    验收仍待完成。

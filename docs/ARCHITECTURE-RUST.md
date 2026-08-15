@@ -79,11 +79,12 @@ cargo run -p heatmap-wgpu -- ..\data\genome.hic 1_1 ..\data\genome.assembly [con
 ```
 
 最后一个命令会打开 GPU 原型。左键拖动、滚轮缩放；`+/-` 调色，`A` 恢复
-自动色阶，`R` 重置视图。右键选择 scaffold，`I` 翻转，Shift+右键移动到目标
+自动色阶，`R` 重置视图。右键选择 scaffold，再右键目标 scaffold 即移动到目标
 前，Ctrl+Z/Y 撤销重做，Ctrl+S 保存 modified assembly。`N` 切换 normalization，
 不传 control 文件时，`M` 切换 Observed / Expected / O/E / Pearson。传入第四个位置参数
-`control.hic` 后，会额外提供 Control / Control-Expected / Control-Pearson；`N` 只切换当前
-observed 或 control 数据源的 normalization。
+`control.hic` 后，会额外提供 Control / Control-Expected / Control-Pearson；单数据源视图中
+`N` 切换当前数据源的 normalization，比较视图中 `N` 切 observed、`Shift+N` 切 control，
+标题同时显示两侧状态。
 
 Windows portable 构建：
 

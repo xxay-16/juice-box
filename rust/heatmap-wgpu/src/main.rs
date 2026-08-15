@@ -305,7 +305,7 @@ impl GpuState {
         displayed: GenomeViewport,
         color_range: [f32; 2],
         selected_range: Option<[u64; 2]>,
-        pearson_colors: bool,
+        color_mode: f32,
     ) -> Result<(), wgpu::SurfaceError> {
         let requested_bounds = requested.bounds_bp();
         let displayed_bounds = displayed.bounds_bp();
@@ -318,12 +318,7 @@ impl GpuState {
         let aspect = self.config.width as f32 / self.config.height.max(1) as f32;
         let uniform = ViewUniform {
             texture_rect,
-            color_range: [
-                color_range[0],
-                color_range[1],
-                f32::from(pearson_colors),
-                0.0,
-            ],
+            color_range: [color_range[0], color_range[1], color_mode, 0.0],
             surface: [
                 aspect,
                 self.config.width as f32,
@@ -604,6 +599,18 @@ impl App {
         }
     }
 
+    fn normalization_title(&self) -> String {
+        if self.matrix_type.is_comparison() {
+            format!(
+                "obs {} / ctrl {}",
+                self.normalization.label(),
+                self.control_normalization.label()
+            )
+        } else {
+            self.active_normalization().label().to_owned()
+        }
+    }
+
     fn schedule_request(&mut self) {
         // Overscan keeps the picture continuous while a drag is under way,
         // but it must not turn into a reason to stop asking the worker for
@@ -739,7 +746,7 @@ impl App {
                     window.set_title(&format!(
                         "{} — {} — {} — {} bp — blocks {}/{}{} — {:.1} ms — cache {}/{} — color {}",
                         self.base_title,
-                        result.normalization.label(),
+                        self.normalization_title(),
                         result.matrix_type.label(),
                         result.resolution,
                         result.loaded_blocks,
@@ -830,6 +837,13 @@ impl App {
         let map = editor.document().coordinate_map()?;
         self.assembly_version = editor.document().version;
         self.engine.update_assembly(map, self.assembly_version);
+        // An assembly edit changes the meaning of every screen coordinate,
+        // even when all required source Blocks are already cached.  Forget
+        // the previous completion/in-flight coverage before requesting the
+        // new version so no later scheduler decision can treat the old
+        // arrangement as a valid refill for the vacated insertion area.
+        self.in_flight_viewport = None;
+        self.request_pending = false;
         self.requested_viewport.generation = self.requested_viewport.generation.wrapping_add(1);
         self.request_current();
         Ok(())
@@ -851,8 +865,7 @@ impl App {
             .document()
             .placement_at(coordinate)
             .context("cursor is outside the assembly layout")?;
-        if self.modifiers.shift_key()
-            && let Some(selected) = self.selected_scaffold
+        if let Some(selected) = self.selected_scaffold
             && selected.scaffold_id != target.scaffold_id
         {
             self.assembly_editor
@@ -864,6 +877,14 @@ impl App {
                     target.superscaffold_index,
                     target.scaffold_index,
                 )?;
+            app_log!(
+                "assembly moved: scaffold={} from superscaffold={} index={} to superscaffold={} before_index={}",
+                selected.scaffold_id,
+                selected.superscaffold_index,
+                selected.scaffold_index,
+                target.superscaffold_index,
+                target.scaffold_index
+            );
             self.selected_scaffold = None;
             self.debris_anchor = None;
             self.apply_assembly_change()?;
@@ -1017,7 +1038,7 @@ impl ApplicationHandler for App {
                 .create_window(
                     WindowAttributes::default()
                         .with_title(&self.base_title)
-                        .with_inner_size(PhysicalSize::new(1000, 820)),
+                        .with_inner_size(PhysicalSize::new(900, 900)),
                 )
                 .expect("window creation failed"),
         );
@@ -1147,7 +1168,11 @@ impl ApplicationHandler for App {
                         self.request_current();
                     }
                     PhysicalKey::Code(KeyCode::KeyN) => {
-                        if self.matrix_type.uses_control() {
+                        let update_control = normalization_key_targets_control(
+                            self.matrix_type,
+                            self.modifiers.shift_key(),
+                        );
+                        if update_control {
                             self.control_normalization = self.control_normalization.next();
                             self.engine
                                 .update_control_normalization(self.control_normalization);
@@ -1160,12 +1185,16 @@ impl ApplicationHandler for App {
                         self.request_current();
                         app_log!(
                             "{} normalization changed: {}",
-                            if self.matrix_type.uses_control() {
+                            if update_control {
                                 "control"
                             } else {
                                 "observed"
                             },
-                            self.active_normalization().label()
+                            if update_control {
+                                self.control_normalization.label()
+                            } else {
+                                self.normalization.label()
+                            }
                         );
                     }
                     PhysicalKey::Code(KeyCode::KeyM) => {
@@ -1259,8 +1288,13 @@ impl ApplicationHandler for App {
                             .map(|placement| [placement.start, placement.end]),
                         matches!(
                             self.matrix_type,
-                            MatrixType::Pearson | MatrixType::ControlPearson
-                        ),
+                            MatrixType::Pearson
+                                | MatrixType::ControlPearson
+                                | MatrixType::PearsonVs
+                        )
+                        .then_some(1.0)
+                        .or_else(|| matches!(self.matrix_type, MatrixType::RatioV2).then_some(2.0))
+                        .unwrap_or(0.0),
                     ) {
                         Ok(()) => {}
                         Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -1345,8 +1379,10 @@ fn should_request_idle_viewport(
 }
 
 /// A visible view can be covered by an older overscanned texture and still
-/// need a fresh worker request: that request is what fills the newly exposed
-/// genomic area at native detail and primes the directional prefetch cache.
+/// need a fresh worker request: that request both fills newly exposed genomic
+/// pixels at the stopped position and moves the two prefetch rings in the
+/// drag direction.  The engine owns one latest-request slot, so this remains
+/// coalesced to the 16 ms interaction cadence rather than forming a queue.
 fn should_submit_interaction_viewport(
     requested: GenomeViewport,
     last_submitted_generation: u64,
@@ -1354,6 +1390,9 @@ fn should_submit_interaction_viewport(
     requested.generation != last_submitted_generation
 }
 
+fn normalization_key_targets_control(matrix_type: MatrixType, shift: bool) -> bool {
+    matrix_type.uses_control() || (matrix_type.is_comparison() && shift)
+}
 fn main() {
     std::panic::set_hook(Box::new(|panic| {
         app_log!("panic: {panic}");
@@ -1587,6 +1626,20 @@ mod tests {
     }
 
     #[test]
+    fn comparison_normalization_shortcuts_target_each_dataset_explicitly() {
+        assert!(!normalization_key_targets_control(MatrixType::Vs, false));
+        assert!(normalization_key_targets_control(MatrixType::Vs, true));
+        assert!(normalization_key_targets_control(
+            MatrixType::Control,
+            false
+        ));
+        assert!(!normalization_key_targets_control(
+            MatrixType::Observed,
+            true
+        ));
+    }
+
+    #[test]
     fn accepts_a_streamed_sub_rectangle_for_upload() {
         let tile = IntensityTile::new(
             heatmap_core::TileKey {
@@ -1756,10 +1809,11 @@ mod tests {
         requested.generation = 8;
 
         // The older overscanned texture is still drawable, which is exactly
-        // why this case used to skip a request and never prefetch ahead.
+        // why a coverage-only scheduler would skip a request and never
+        // prefetch ahead.
         assert!(viewport_can_serve(requested, completed, true));
-        // schedule_request's first branch is deliberately generation based,
-        // rather than coverage based, so generation 8 is submitted.
+        // A fresh generation must be sent even inside overscan; TileEngine
+        // replaces its single slot instead of accumulating a work queue.
         assert!(should_submit_interaction_viewport(requested, 5));
         assert!(!should_submit_interaction_viewport(requested, 8));
     }
@@ -1799,5 +1853,94 @@ mod tests {
         let (_, control_pearson_bits) =
             request_complete_tile(&engine, &mut viewport, MatrixType::ControlPearson);
         assert_eq!(observed_pearson_bits, control_pearson_bits);
+
+        let (_, vs_bits) = request_complete_tile(&engine, &mut viewport, MatrixType::Vs);
+        let size = tile_engine::OUTPUT_SIZE as usize;
+        for y in 0..size {
+            for x in 0..size {
+                assert_eq!(
+                    vs_bits[y * size + x],
+                    vs_bits[x * size + y],
+                    "same-file VS must be symmetric across the observed/control split"
+                );
+            }
+        }
+
+        let (_, ratio_bits) = request_complete_tile(&engine, &mut viewport, MatrixType::Ratio);
+        assert!(ratio_bits.iter().all(|&bits| {
+            let value = f32::from_bits(bits);
+            value == 0.0 || value == 1.0
+        }));
+        assert!(ratio_bits.iter().any(|&bits| f32::from_bits(bits) == 1.0));
+
+        let (_, ratio_v2_bits) = request_complete_tile(&engine, &mut viewport, MatrixType::RatioV2);
+        assert_eq!(ratio_bits, ratio_v2_bits);
+
+        let (_, oe_vs_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::ObservedOverExpectedVs);
+        assert_eq!(observed_oe_bits, oe_vs_bits);
+
+        let (_, pearson_vs_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::PearsonVs);
+        assert_eq!(observed_pearson_bits, pearson_vs_bits);
+    }
+
+    #[test]
+    #[ignore = "requires JUICEBOX_ASYMMETRIC_OBSERVED_HIC and JUICEBOX_ASYMMETRIC_CONTROL_HIC"]
+    fn real_distinct_control_fixture_exercises_dual_reader_comparison_modes() {
+        let observed_path = PathBuf::from(
+            std::env::var_os("JUICEBOX_ASYMMETRIC_OBSERVED_HIC")
+                .expect("set JUICEBOX_ASYMMETRIC_OBSERVED_HIC"),
+        );
+        let control_path = PathBuf::from(
+            std::env::var_os("JUICEBOX_ASYMMETRIC_CONTROL_HIC")
+                .expect("set JUICEBOX_ASYMMETRIC_CONTROL_HIC"),
+        );
+        let file = HicFile::open(&observed_path).expect("failed to open observed fixture");
+        let matrix = file
+            .read_matrix("1_1")
+            .expect("missing observed matrix 1_1");
+        let chromosome = &file.header.chromosomes[matrix.chromosome_1 as usize];
+        let engine = TileEngine::spawn(observed_path, "1_1".to_owned(), None, Some(control_path))
+            .expect("distinct fixture datasets should be compatible");
+        let mut viewport = GenomeViewport::new(chromosome.length, INITIAL_SPAN_FRACTION);
+
+        let (_, observed_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::Observed);
+        let (_, control_bits) = request_complete_tile(&engine, &mut viewport, MatrixType::Control);
+        assert_ne!(observed_bits, control_bits);
+
+        let (_, vs_bits) = request_complete_tile(&engine, &mut viewport, MatrixType::Vs);
+        assert!(vs_bits.iter().any(|&bits| bits != 0));
+        assert_ne!(vs_bits, observed_bits);
+        assert_ne!(vs_bits, control_bits);
+
+        let (_, ratio_bits) = request_complete_tile(&engine, &mut viewport, MatrixType::Ratio);
+        assert!(ratio_bits.iter().any(|&bits| {
+            let value = f32::from_bits(bits);
+            value.is_finite() && value > 0.0 && value != 1.0
+        }));
+        let (_, ratio_v2_bits) = request_complete_tile(&engine, &mut viewport, MatrixType::RatioV2);
+        assert_eq!(ratio_bits, ratio_v2_bits);
+
+        let (_, observed_oe_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::ObservedOverExpected);
+        let (_, control_oe_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::ControlOverExpected);
+        assert_ne!(observed_oe_bits, control_oe_bits);
+        let (_, oe_vs_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::ObservedOverExpectedVs);
+        assert_ne!(oe_vs_bits, observed_oe_bits);
+        assert_ne!(oe_vs_bits, control_oe_bits);
+
+        let (_, observed_pearson_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::Pearson);
+        let (_, control_pearson_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::ControlPearson);
+        assert_ne!(observed_pearson_bits, control_pearson_bits);
+        let (_, pearson_vs_bits) =
+            request_complete_tile(&engine, &mut viewport, MatrixType::PearsonVs);
+        assert_ne!(pearson_vs_bits, observed_pearson_bits);
+        assert_ne!(pearson_vs_bits, control_pearson_bits);
     }
 }

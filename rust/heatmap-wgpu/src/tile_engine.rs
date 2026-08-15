@@ -16,6 +16,10 @@ use heatmap_core::{
     GenomeViewport, IntensityTile, MAX_PEARSON_CELLS, PearsonError, PearsonMatrix, TileKey,
     compute_java_pearsons_cancellable,
 };
+use heatmap_wgpu::comparison::{
+    ContactMap, combine_triangles, observed_over_expected_score, rasterize_ratio_contacts,
+    scale_for_vs,
+};
 use hic_core::{
     ContactRecord, ExpectedValueKey, ExpectedValueVector, HicFile, Matrix, MatrixUnit, MatrixZoom,
     NormalizationKey,
@@ -82,6 +86,11 @@ pub enum MatrixType {
     Control,
     ControlOverExpected,
     ControlPearson,
+    Vs,
+    Ratio,
+    RatioV2,
+    ObservedOverExpectedVs,
+    PearsonVs,
 }
 
 impl MatrixType {
@@ -94,6 +103,11 @@ impl MatrixType {
             Self::Control => "Control",
             Self::ControlOverExpected => "Control/ExpectedC",
             Self::ControlPearson => "Control Pearson",
+            Self::Vs => "Observed vs Control",
+            Self::Ratio => "Observed/Control * (AvgC/AvgO)",
+            Self::RatioV2 => "Log[Observed/Control * (AvgC/AvgO)]",
+            Self::ObservedOverExpectedVs => "O/E vs Control/ExpectedC",
+            Self::PearsonVs => "Observed Pearson vs Control Pearson",
         }
     }
 
@@ -109,11 +123,16 @@ impl MatrixType {
         match self {
             Self::Observed => Self::Control,
             Self::Control => Self::Expected,
-            Self::Expected => Self::ObservedOverExpected,
+            Self::Expected => Self::Vs,
+            Self::Vs => Self::Ratio,
+            Self::Ratio => Self::RatioV2,
+            Self::RatioV2 => Self::ObservedOverExpected,
             Self::ObservedOverExpected => Self::ControlOverExpected,
-            Self::ControlOverExpected => Self::Pearson,
+            Self::ControlOverExpected => Self::ObservedOverExpectedVs,
+            Self::ObservedOverExpectedVs => Self::Pearson,
             Self::Pearson => Self::ControlPearson,
-            Self::ControlPearson => Self::Observed,
+            Self::ControlPearson => Self::PearsonVs,
+            Self::PearsonVs => Self::Observed,
         }
     }
 
@@ -125,11 +144,18 @@ impl MatrixType {
     }
 
     fn is_pearson(self) -> bool {
-        matches!(self, Self::Pearson | Self::ControlPearson)
+        matches!(self, Self::Pearson | Self::ControlPearson | Self::PearsonVs)
     }
 
     fn is_observed(self) -> bool {
         matches!(self, Self::Observed | Self::Control)
+    }
+
+    pub fn is_comparison(self) -> bool {
+        matches!(
+            self,
+            Self::Vs | Self::Ratio | Self::RatioV2 | Self::ObservedOverExpectedVs | Self::PearsonVs
+        )
     }
 }
 
@@ -312,6 +338,54 @@ fn worker_loop(
         };
 
         let request_assembly_map = next.assembly_map.clone();
+        if next.matrix_type.is_comparison() {
+            let (control_file, control_matrix) = control
+                .as_ref()
+                .context("selected comparison MatrixType requires a control .hic dataset")?;
+            match build_comparison_tile(
+                &file,
+                &matrix,
+                &mut observed_state,
+                control_file,
+                control_matrix,
+                &mut control_state,
+                next,
+                &latest_generation,
+                &sender,
+            ) {
+                Ok(Some(completed_viewport)) => {
+                    prefetch_viewport(
+                        &file,
+                        &matrix,
+                        matrix.chromosome_1 == matrix.chromosome_2,
+                        request_assembly_map.as_deref(),
+                        completed_viewport,
+                        &latest_generation,
+                        &request,
+                        &mut observed_state.block_cache,
+                    )?;
+                    if !has_pending_request(&request) {
+                        prefetch_viewport(
+                            control_file,
+                            control_matrix,
+                            control_matrix.chromosome_1 == control_matrix.chromosome_2,
+                            request_assembly_map.as_deref(),
+                            completed_viewport,
+                            &latest_generation,
+                            &request,
+                            &mut control_state.block_cache,
+                        )?;
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    if sender.send(Err(format!("{error:#}"))).is_err() {
+                        return Ok(());
+                    }
+                }
+            }
+            continue;
+        }
         let use_control = next.matrix_type.uses_control();
         let (active_file, active_matrix, state) = if use_control {
             let (control_file, control_matrix) = control
@@ -482,7 +556,13 @@ fn build_tile_streaming(
     // source Blocks.  This turns one all-or-nothing viewport texture into a
     // stream of progressively filled regions.
     let mut raw_values = vec![0.0_f32; OUTPUT_SIZE as usize * OUTPUT_SIZE as usize];
-    let mut cache_hits = 0;
+    // Keep cached blocks in their viewport order instead of accumulating all
+    // of them before publishing.  An assembly edit normally reuses precisely
+    // the same compressed source blocks but maps them to different display
+    // coordinates.  Waiting to rasterize every cache hit made that edit look
+    // inert for hundreds of milliseconds: no I/O was pending, yet no new
+    // texture was ever sent until the entire remap had finished.
+    let mut cached_blocks = Vec::new();
     let mut missing_blocks = Vec::new();
 
     for &block_number in &visible_blocks {
@@ -490,32 +570,41 @@ fn build_tile_streaming(
             return Ok(None);
         }
         if let Some(block) = cache.get(zoom, block_number) {
-            cache_hits += 1;
-            accumulate_block(
-                &mut raw_values,
-                bin_bounds,
-                symmetric,
-                zoom,
-                assembly_map,
-                normalization_vector.as_deref().map(Vec::as_slice),
-                expected_vector.as_deref(),
-                request.matrix_type,
-                matrix.chromosome_1,
-                &block,
-            );
+            cached_blocks.push(block);
         } else {
             missing_blocks.push(block_number);
         }
     }
+    let cache_hits = cached_blocks.len();
     let cache_misses = missing_blocks.len();
     let total_blocks = visible_blocks.len();
-    let mut loaded_blocks = cache_hits;
+    let mut loaded_blocks = 0;
     let mut published_generation_texture = false;
 
-    // If cache hits already provide part of the new area, display them before
-    // doing any I/O.  Otherwise leave the previous texture visible until the
-    // first real Block arrives, avoiding a black full-screen flash.
-    if loaded_blocks > 0 && cache_misses > 0 {
+    // Cached data is still new display data after an assembly reorder.  Send
+    // it block-by-block just like freshly decompressed data: the first result
+    // atomically replaces the old assembly texture, and later results fill
+    // only the newly changed pixel regions.
+    for block in cached_blocks {
+        if is_stale(latest_generation, generation) {
+            return Ok(None);
+        }
+        let dirty_rect = accumulate_block(
+            &mut raw_values,
+            bin_bounds,
+            symmetric,
+            zoom,
+            assembly_map,
+            normalization_vector.as_deref().map(Vec::as_slice),
+            expected_vector.as_deref(),
+            request.matrix_type,
+            matrix.chromosome_1,
+            &block,
+        );
+        loaded_blocks += 1;
+        let upload_rect = published_generation_texture
+            .then_some(dirty_rect.unwrap_or([0, 0, 0, 0]))
+            .filter(|rect| !dirty_rect_requires_full_upload(*rect));
         send_stream_result(
             sender,
             &request,
@@ -527,8 +616,8 @@ fn build_tile_streaming(
             cache_misses,
             loaded_blocks,
             total_blocks,
-            false,
-            None,
+            loaded_blocks == total_blocks,
+            upload_rect,
             started,
         )?;
         published_generation_texture = true;
@@ -587,9 +676,9 @@ fn build_tile_streaming(
         return Ok(None);
     }
 
-    // A viewport consisting entirely of cached Blocks has no I/O loop above,
-    // so publish its final state here.
-    if cache_misses == 0 {
+    // An empty viewport has no cached or missing Block to trigger the stream
+    // above, but it still needs a complete all-zero texture.
+    if cache_misses == 0 && !published_generation_texture {
         send_stream_result(
             sender,
             &request,
@@ -607,6 +696,486 @@ fn build_tile_streaming(
         )?;
     }
     Ok(Some(rendered_viewport))
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "comparison construction deliberately keeps the two isolated dataset states explicit"
+)]
+fn build_comparison_tile(
+    observed_file: &HicFile,
+    observed_matrix: &Matrix,
+    observed_state: &mut DatasetWorkerState,
+    control_file: &HicFile,
+    control_matrix: &Matrix,
+    control_state: &mut DatasetWorkerState,
+    request: TileRequest,
+    latest_generation: &AtomicU64,
+    sender: &Sender<Result<TileResult, String>>,
+) -> Result<Option<GenomeViewport>> {
+    let started = Instant::now();
+    let generation = request.viewport.generation;
+    let target_bp_per_pixel = request.viewport.span_bp / f64::from(OUTPUT_SIZE);
+    let (observed_zoom, control_zoom) = choose_common_zoom(
+        observed_matrix,
+        control_matrix,
+        target_bp_per_pixel,
+        request.matrix_type == MatrixType::PearsonVs,
+        request.viewport.genome_length_bp,
+    )
+    .context("observed and control have no common compatible base-pair zoom")?;
+    let rendered_viewport = rendered_viewport_for(request.viewport);
+    let bin_bounds = viewport_bin_bounds(rendered_viewport, observed_zoom.bin_size);
+    if matches!(request.matrix_type, MatrixType::Ratio | MatrixType::RatioV2) {
+        let Some((observed_contacts, observed_stats)) = collect_dataset_contacts(
+            observed_file,
+            observed_matrix,
+            observed_zoom,
+            observed_state,
+            request.observed_normalization,
+            &request,
+            latest_generation,
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some((control_contacts, control_stats)) = collect_dataset_contacts(
+            control_file,
+            control_matrix,
+            control_zoom,
+            control_state,
+            request.control_normalization,
+            &request,
+            latest_generation,
+        )?
+        else {
+            return Ok(None);
+        };
+        let values = rasterize_ratio_contacts(
+            &observed_contacts,
+            &control_contacts,
+            bin_bounds,
+            OUTPUT_SIZE,
+            observed_matrix.chromosome_1 == observed_matrix.chromosome_2,
+            zoom_average_count(observed_file, observed_matrix, observed_zoom),
+            zoom_average_count(control_file, control_matrix, control_zoom),
+        );
+        let visible_blocks = observed_stats.visible_blocks + control_stats.visible_blocks;
+        let cache_hits = observed_stats.cache_hits + control_stats.cache_hits;
+        let cache_misses = observed_stats.cache_misses + control_stats.cache_misses;
+        send_stream_result(
+            sender,
+            &request,
+            rendered_viewport,
+            observed_zoom.bin_size,
+            &values,
+            visible_blocks,
+            cache_hits,
+            cache_misses,
+            visible_blocks,
+            visible_blocks,
+            true,
+            None,
+            started,
+        )?;
+        return Ok(Some(rendered_viewport));
+    }
+
+    let (observed_values, control_values, observed_stats, control_stats) = if request.matrix_type
+        == MatrixType::PearsonVs
+    {
+        let observed_expected = expected_vector(
+            observed_file,
+            request.observed_normalization,
+            observed_zoom.bin_size,
+            &mut observed_state.expected_cache,
+        )?;
+        let control_expected = expected_vector(
+            control_file,
+            request.control_normalization,
+            control_zoom.bin_size,
+            &mut control_state.expected_cache,
+        )?;
+        let Some(observed_pearson) = pearson_matrix(
+            observed_file,
+            observed_matrix,
+            observed_zoom,
+            request.observed_normalization,
+            &observed_expected,
+            &mut observed_state.pearson_cache,
+            latest_generation,
+            generation,
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some(control_pearson) = pearson_matrix(
+            control_file,
+            control_matrix,
+            control_zoom,
+            request.control_normalization,
+            &control_expected,
+            &mut control_state.pearson_cache,
+            latest_generation,
+            generation,
+        )?
+        else {
+            return Ok(None);
+        };
+        (
+            rasterize_dense_pearson(
+                &observed_pearson,
+                bin_bounds,
+                observed_zoom.bin_size,
+                request.assembly_map.as_deref(),
+            ),
+            rasterize_dense_pearson(
+                &control_pearson,
+                bin_bounds,
+                control_zoom.bin_size,
+                request.assembly_map.as_deref(),
+            ),
+            DatasetRasterStats::default(),
+            DatasetRasterStats::default(),
+        )
+    } else {
+        let observed_source_type = if request.matrix_type == MatrixType::ObservedOverExpectedVs {
+            MatrixType::ObservedOverExpected
+        } else {
+            MatrixType::Observed
+        };
+        let control_source_type = if request.matrix_type == MatrixType::ObservedOverExpectedVs {
+            MatrixType::ControlOverExpected
+        } else {
+            MatrixType::Control
+        };
+        let Some((observed_values, observed_stats)) = rasterize_dataset(
+            observed_file,
+            observed_matrix,
+            observed_zoom,
+            observed_state,
+            request.observed_normalization,
+            observed_source_type,
+            &request,
+            bin_bounds,
+            latest_generation,
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some((control_values, control_stats)) = rasterize_dataset(
+            control_file,
+            control_matrix,
+            control_zoom,
+            control_state,
+            request.control_normalization,
+            control_source_type,
+            &request,
+            bin_bounds,
+            latest_generation,
+        )?
+        else {
+            return Ok(None);
+        };
+        (
+            observed_values,
+            control_values,
+            observed_stats,
+            control_stats,
+        )
+    };
+    if is_stale(latest_generation, generation) {
+        return Ok(None);
+    }
+
+    let values = match request.matrix_type {
+        MatrixType::Vs => combine_triangles(
+            &scale_for_vs(
+                &observed_values,
+                zoom_average_count(observed_file, observed_matrix, observed_zoom),
+                zoom_average_count(control_file, control_matrix, control_zoom),
+            ),
+            &scale_for_vs(
+                &control_values,
+                zoom_average_count(control_file, control_matrix, control_zoom),
+                zoom_average_count(observed_file, observed_matrix, observed_zoom),
+            ),
+        ),
+        MatrixType::Ratio | MatrixType::RatioV2 => {
+            unreachable!("ratio modes use contact-level pairing before rasterization")
+        }
+        MatrixType::ObservedOverExpectedVs | MatrixType::PearsonVs => {
+            combine_triangles(&observed_values, &control_values)
+        }
+        _ => unreachable!("comparison builder received a non-comparison MatrixType"),
+    };
+    let visible_blocks = observed_stats.visible_blocks + control_stats.visible_blocks;
+    let cache_hits = observed_stats.cache_hits + control_stats.cache_hits;
+    let cache_misses = observed_stats.cache_misses + control_stats.cache_misses;
+    send_stream_result(
+        sender,
+        &request,
+        rendered_viewport,
+        observed_zoom.bin_size,
+        &values,
+        visible_blocks,
+        cache_hits,
+        cache_misses,
+        visible_blocks,
+        visible_blocks,
+        true,
+        None,
+        started,
+    )?;
+    Ok(Some(rendered_viewport))
+}
+
+#[derive(Default)]
+struct DatasetRasterStats {
+    visible_blocks: usize,
+    cache_hits: usize,
+    cache_misses: usize,
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "contact collection keeps the isolated dataset and cancellation inputs explicit"
+)]
+fn collect_dataset_contacts(
+    file: &HicFile,
+    matrix: &Matrix,
+    zoom: &MatrixZoom,
+    state: &mut DatasetWorkerState,
+    normalization: Normalization,
+    request: &TileRequest,
+    latest_generation: &AtomicU64,
+) -> Result<Option<(ContactMap, DatasetRasterStats)>> {
+    let generation = request.viewport.generation;
+    let normalization_vector = normalization_vector(
+        file,
+        matrix.chromosome_1,
+        normalization,
+        &mut state.normalization_cache,
+        f64::from(zoom.bin_size),
+        matrix,
+    )?;
+    let symmetric = matrix.chromosome_1 == matrix.chromosome_2;
+    let blocks = block_numbers_for_viewport(
+        zoom,
+        rendered_viewport_for(request.viewport),
+        symmetric,
+        request.assembly_map.as_deref(),
+    );
+    let mut contacts = ContactMap::new();
+    let mut missing = Vec::new();
+    let mut cache_hits = 0;
+    let mut collect = |records: &[ContactRecord]| {
+        for record in records {
+            let Some(normalized) =
+                normalize_contact(record, normalization_vector.as_deref().map(Vec::as_slice))
+            else {
+                continue;
+            };
+            let Some((bin_x, bin_y, counts)) =
+                map_contact(&normalized, zoom.bin_size, request.assembly_map.as_deref())
+            else {
+                continue;
+            };
+            let key = if symmetric && bin_y < bin_x {
+                (bin_y, bin_x)
+            } else {
+                (bin_x, bin_y)
+            };
+            *contacts.entry(key).or_insert(0.0) += counts;
+        }
+    };
+    for &block_number in &blocks {
+        if is_stale(latest_generation, generation) {
+            return Ok(None);
+        }
+        if let Some(block) = state.block_cache.get(zoom, block_number) {
+            cache_hits += 1;
+            collect(&block);
+        } else {
+            missing.push(block_number);
+        }
+    }
+    let mut became_stale = false;
+    stream_blocks_parallel(file, zoom, &missing, |block_number, records| {
+        if is_stale(latest_generation, generation) {
+            became_stale = true;
+            return Ok(());
+        }
+        let block = state.block_cache.insert(zoom, block_number, records);
+        collect(&block);
+        Ok(())
+    })?;
+    if became_stale || is_stale(latest_generation, generation) {
+        return Ok(None);
+    }
+    Ok(Some((
+        contacts,
+        DatasetRasterStats {
+            visible_blocks: blocks.len(),
+            cache_hits,
+            cache_misses: missing.len(),
+        },
+    )))
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "dataset rasterization keeps scientific and cache inputs explicit"
+)]
+fn rasterize_dataset(
+    file: &HicFile,
+    matrix: &Matrix,
+    zoom: &MatrixZoom,
+    state: &mut DatasetWorkerState,
+    normalization: Normalization,
+    source_type: MatrixType,
+    request: &TileRequest,
+    bin_bounds: [i32; 4],
+    latest_generation: &AtomicU64,
+) -> Result<Option<(Vec<f32>, DatasetRasterStats)>> {
+    let generation = request.viewport.generation;
+    let normalization_vector = normalization_vector(
+        file,
+        matrix.chromosome_1,
+        normalization,
+        &mut state.normalization_cache,
+        f64::from(zoom.bin_size),
+        matrix,
+    )?;
+    let expected = matches!(
+        source_type,
+        MatrixType::ObservedOverExpected | MatrixType::ControlOverExpected
+    )
+    .then(|| {
+        expected_vector(
+            file,
+            normalization,
+            zoom.bin_size,
+            &mut state.expected_cache,
+        )
+    })
+    .transpose()?;
+    let symmetric = matrix.chromosome_1 == matrix.chromosome_2;
+    let blocks = block_numbers_for_viewport(
+        zoom,
+        rendered_viewport_for(request.viewport),
+        symmetric,
+        request.assembly_map.as_deref(),
+    );
+    let mut values = vec![0.0_f32; OUTPUT_SIZE as usize * OUTPUT_SIZE as usize];
+    let mut missing = Vec::new();
+    let mut cache_hits = 0;
+    for &block_number in &blocks {
+        if is_stale(latest_generation, generation) {
+            return Ok(None);
+        }
+        if let Some(block) = state.block_cache.get(zoom, block_number) {
+            cache_hits += 1;
+            accumulate_block(
+                &mut values,
+                bin_bounds,
+                symmetric,
+                zoom,
+                request.assembly_map.as_deref(),
+                normalization_vector.as_deref().map(Vec::as_slice),
+                expected.as_deref(),
+                source_type,
+                matrix.chromosome_1,
+                &block,
+            );
+        } else {
+            missing.push(block_number);
+        }
+    }
+    let mut became_stale = false;
+    stream_blocks_parallel(file, zoom, &missing, |block_number, records| {
+        if is_stale(latest_generation, generation) {
+            became_stale = true;
+            return Ok(());
+        }
+        let block = state.block_cache.insert(zoom, block_number, records);
+        accumulate_block(
+            &mut values,
+            bin_bounds,
+            symmetric,
+            zoom,
+            request.assembly_map.as_deref(),
+            normalization_vector.as_deref().map(Vec::as_slice),
+            expected.as_deref(),
+            source_type,
+            matrix.chromosome_1,
+            &block,
+        );
+        Ok(())
+    })?;
+    if became_stale || is_stale(latest_generation, generation) {
+        return Ok(None);
+    }
+    Ok(Some((
+        values,
+        DatasetRasterStats {
+            visible_blocks: blocks.len(),
+            cache_hits,
+            cache_misses: missing.len(),
+        },
+    )))
+}
+
+fn zoom_average_count(file: &HicFile, matrix: &Matrix, zoom: &MatrixZoom) -> f32 {
+    let chromosome_1 = &file.header.chromosomes[matrix.chromosome_1 as usize];
+    let chromosome_2 = &file.header.chromosomes[matrix.chromosome_2 as usize];
+    let bins_1 = (chromosome_1.length / u64::from(zoom.bin_size)).max(1) as f64;
+    let bins_2 = (chromosome_2.length / u64::from(zoom.bin_size)).max(1) as f64;
+    (f64::from(zoom.sum_counts) / bins_1 / bins_2) as f32
+}
+
+fn choose_common_zoom<'a>(
+    observed: &'a Matrix,
+    control: &'a Matrix,
+    target_bp_per_pixel: f64,
+    pearson: bool,
+    genome_length_bp: f64,
+) -> Option<(&'a MatrixZoom, &'a MatrixZoom)> {
+    observed
+        .zooms
+        .iter()
+        .filter(|zoom| zoom.unit == MatrixUnit::BasePairs)
+        .filter(|zoom| {
+            !pearson
+                || (zoom.bin_size >= MIN_PEARSON_BIN_SIZE_BP
+                    && pearson_cells_within_budget(genome_length_bp, zoom.bin_size))
+        })
+        .filter_map(|observed_zoom| {
+            control
+                .zooms
+                .iter()
+                .find(|control_zoom| {
+                    control_zoom.unit == MatrixUnit::BasePairs
+                        && control_zoom.bin_size == observed_zoom.bin_size
+                })
+                .map(|control_zoom| (observed_zoom, control_zoom))
+        })
+        .min_by(|(left, _), (right, _)| {
+            let left_distance = (f64::from(left.bin_size) / target_bp_per_pixel.max(1.0))
+                .ln()
+                .abs();
+            let right_distance = (f64::from(right.bin_size) / target_bp_per_pixel.max(1.0))
+                .ln()
+                .abs();
+            left_distance.total_cmp(&right_distance)
+        })
+}
+
+fn pearson_cells_within_budget(genome_length_bp: f64, bin_size: u32) -> bool {
+    let dimension = (genome_length_bp / f64::from(bin_size)).floor() as usize + 1;
+    dimension
+        .checked_mul(dimension)
+        .is_some_and(|cells| cells <= MAX_PEARSON_CELLS)
 }
 
 #[allow(
@@ -758,6 +1327,13 @@ fn accumulate_block(
                 MatrixType::Pearson | MatrixType::ControlPearson => {
                     unreachable!("Pearson tiles use the dense matrix path")
                 }
+                MatrixType::Vs
+                | MatrixType::Ratio
+                | MatrixType::RatioV2
+                | MatrixType::ObservedOverExpectedVs
+                | MatrixType::PearsonVs => {
+                    unreachable!("comparison tiles use the dual-dataset path")
+                }
             };
             Some((bin_x, bin_y, counts))
         }),
@@ -805,6 +1381,11 @@ fn matrix_type_id(matrix_type: MatrixType) -> u32 {
         MatrixType::Control => 4,
         MatrixType::ControlOverExpected => 5,
         MatrixType::ControlPearson => 6,
+        MatrixType::Vs => 7,
+        MatrixType::Ratio => 8,
+        MatrixType::RatioV2 => 9,
+        MatrixType::ObservedOverExpectedVs => 10,
+        MatrixType::PearsonVs => 11,
     }
 }
 
@@ -816,8 +1397,9 @@ fn observed_over_expected(
     mapped_bin_y: i32,
 ) -> Option<f32> {
     let distance = u64::from((mapped_bin_x - mapped_bin_y).unsigned_abs());
-    let score = f64::from(record.counts) / expected.value_for(chromosome, distance)?;
-    score.is_finite().then_some(score as f32)
+    let expected = expected.value_for(chromosome, distance)? as f32;
+    let score = observed_over_expected_score(record.counts, expected, 0.0);
+    (score != 0.0).then_some(score)
 }
 
 #[allow(
@@ -923,11 +1505,13 @@ fn rasterize_dense_pearson(
     let height_bins = (bin_bounds[3] - bin_bounds[1] + 1).max(1) as usize;
     let mut values = vec![f32::NAN; output_size * output_size];
     for y in 0..output_size {
-        let source_y =
-            bin_bounds[1] + i32::try_from((y * height_bins) / output_size).unwrap_or(i32::MAX);
+        let source_y = bin_bounds[1]
+            + i32::try_from(output_pixel_to_source_bin(y, height_bins, output_size))
+                .unwrap_or(i32::MAX);
         for x in 0..output_size {
-            let source_x =
-                bin_bounds[0] + i32::try_from((x * width_bins) / output_size).unwrap_or(i32::MAX);
+            let source_x = bin_bounds[0]
+                + i32::try_from(output_pixel_to_source_bin(x, width_bins, output_size))
+                    .unwrap_or(i32::MAX);
             let Some(source_y) = dense_source_bin(source_y, bin_size, assembly_map) else {
                 continue;
             };
@@ -940,6 +1524,24 @@ fn rasterize_dense_pearson(
         }
     }
     values
+}
+
+/// Inverse of the sparse-contact raster boundary
+/// `floor(source_bin * output_size / source_bins)`.  A simple
+/// `floor(pixel * source_bins / output_size)` maps the first pixel of most
+/// bins back to the preceding bin whenever the scale is not integral (for
+/// example pixel 170 in a 6-bin, 1024-pixel raster).  The ceil-based inverse
+/// keeps dense Pearson cells aligned with sparse MatrixType cells and Java's
+/// one-bin-per-pixel renderer.
+fn output_pixel_to_source_bin(pixel: usize, source_bins: usize, output_size: usize) -> usize {
+    assert!(source_bins > 0);
+    assert!(output_size > 0);
+    pixel
+        .saturating_add(1)
+        .saturating_mul(source_bins)
+        .div_ceil(output_size)
+        .saturating_sub(1)
+        .min(source_bins - 1)
 }
 
 fn dense_source_bin(
@@ -1871,7 +2473,7 @@ mod tests {
 
         let mut with_control = MatrixType::Observed;
         let mut control_cycle = Vec::new();
-        for _ in 0..7 {
+        for _ in 0..12 {
             control_cycle.push(with_control);
             with_control = with_control.next(true);
         }
@@ -1881,12 +2483,76 @@ mod tests {
                 MatrixType::Observed,
                 MatrixType::Control,
                 MatrixType::Expected,
+                MatrixType::Vs,
+                MatrixType::Ratio,
+                MatrixType::RatioV2,
                 MatrixType::ObservedOverExpected,
                 MatrixType::ControlOverExpected,
+                MatrixType::ObservedOverExpectedVs,
                 MatrixType::Pearson,
                 MatrixType::ControlPearson,
+                MatrixType::PearsonVs,
             ]
         );
         assert_eq!(with_control, MatrixType::Observed);
+    }
+
+    #[test]
+    fn comparison_helpers_match_java_identity_invariants() {
+        let observed = vec![2.0; OUTPUT_SIZE as usize * OUTPUT_SIZE as usize];
+        let control = observed.clone();
+        assert_eq!(scale_for_vs(&observed, 3.0, 3.0), observed);
+        assert_eq!(
+            combine_triangles(&observed, &control),
+            observed,
+            "same-file VS must preserve identical values on both triangles"
+        );
+    }
+
+    #[test]
+    fn comparison_helpers_split_observed_and_control_at_the_diagonal() {
+        let size = OUTPUT_SIZE as usize;
+        let observed = vec![2.0; size * size];
+        let control = vec![7.0; size * size];
+        let values = combine_triangles(&observed, &control);
+        assert_eq!(values[0], 2.0);
+        assert_eq!(values[size], 2.0);
+        assert_eq!(values[1], 7.0);
+    }
+
+    #[test]
+    fn contact_level_ratio_matches_java_identity_and_omits_unpaired_contacts() {
+        let mut observed = ContactMap::new();
+        observed.insert((0, 0), 4.0);
+        observed.insert((0, 1), 8.0);
+        let mut control = ContactMap::new();
+        control.insert((0, 0), 4.0);
+        let values = rasterize_ratio_contacts(
+            &observed,
+            &control,
+            [0, 0, 1, 1],
+            OUTPUT_SIZE,
+            true,
+            2.0,
+            2.0,
+        );
+        assert_eq!(values[0], 1.0);
+        assert!(values.iter().skip(1).all(|&value| value == 0.0));
+    }
+
+    #[test]
+    fn dense_inverse_sampling_matches_sparse_raster_boundaries() {
+        let source_bins = 6;
+        let output_size = OUTPUT_SIZE as usize;
+        for source_bin in 0..source_bins {
+            let first_pixel = source_bin * output_size / source_bins;
+            assert_eq!(
+                output_pixel_to_source_bin(first_pixel, source_bins, output_size),
+                source_bin,
+                "first raster pixel for source bin {source_bin} must sample that bin"
+            );
+        }
+        assert_eq!(output_pixel_to_source_bin(169, source_bins, output_size), 0);
+        assert_eq!(output_pixel_to_source_bin(170, source_bins, output_size), 1);
     }
 }

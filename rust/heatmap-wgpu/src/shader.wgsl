@@ -62,7 +62,19 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
     let intensity = textureSample(intensity_texture, intensity_sampler, texture_uv).r;
     var color: vec3<f32>;
-    if (view.color_range.z > 0.5) {
+    if (view.color_range.z > 1.5) {
+        if (intensity != intensity || intensity <= 0.0 || abs(intensity) > 3.402823e38) {
+            color = vec3<f32>(0.5);
+        } else {
+            let threshold = max(view.color_range.y, 1.000001);
+            let signed_value = clamp(log(intensity) / log(threshold), -1.0, 1.0);
+            if (signed_value > 0.0) {
+                color = vec3<f32>(1.0, 1.0 - signed_value, 1.0 - signed_value);
+            } else {
+                color = vec3<f32>(1.0 + signed_value, 1.0 + signed_value, 1.0);
+            }
+        }
+    } else if (view.color_range.z > 0.5) {
         if (intensity != intensity || abs(intensity) > 3.402823e38) {
             color = vec3<f32>(0.5);
         } else if (intensity > 0.0) {

@@ -55,6 +55,30 @@ public class HeatmapRenderer {
         this.colorScaleHandler = colorScaleHandler;
     }
 
+    public static float comparisonVSScore(float count, float ownAverage, float otherAverage) {
+        float sharedAverage = ownAverage * .5f + otherAverage * .5f;
+        float score = count / ownAverage * sharedAverage;
+        return Float.isFinite(score) ? score : 0;
+    }
+
+    public static float comparisonRatioWithAverageScore(float observedCount, float controlCount,
+                                                        float observedAverage, float controlAverage,
+                                                        float observedPseudoCount, float controlPseudoCount) {
+        float numerator = (observedCount + observedPseudoCount) / (observedAverage + observedPseudoCount);
+        float denominator = (controlCount + controlPseudoCount) / (controlAverage + controlPseudoCount);
+        float score = numerator / denominator;
+        return Float.isFinite(score) ? score : 0;
+    }
+
+    public static float observedOverExpectedScore(float count, float expected, float pseudoCount) {
+        float score = (count + pseudoCount) / (expected + pseudoCount);
+        return Float.isFinite(score) ? score : 0;
+    }
+
+    public static float comparisonTriangleValue(float observed, float control, int row, int column) {
+        return row >= column ? observed : control;
+    }
+
     public static String getColorScaleCacheKey(MatrixZoomData zd, MatrixType displayOption, NormalizationType obsNorm, NormalizationType ctrlNorm) {
         return zd.getColorScaleKey(displayOption, obsNorm, ctrlNorm);
     }
@@ -531,9 +555,10 @@ public class HeatmapRenderer {
                 for (ContactRecord rec : recs) {
                     ContactRecord ctrlRecord = controlRecords.get(rec.getKey(controlNormalizationType));
                     if (ctrlRecord != null) {
-                        float num = (rec.getCounts() + pseudoCountObs) / (averageCount + pseudoCountObs);
-                        float den = (ctrlRecord.getCounts() + pseudoCountCtrl) / (ctrlAverageCount + pseudoCountCtrl);
-                        ratioPainting(originX, originY, width, height, cs, sameChr, rec, num, den);
+                        float score = comparisonRatioWithAverageScore(
+                                rec.getCounts(), ctrlRecord.getCounts(), averageCount, ctrlAverageCount,
+                                pseudoCountObs, pseudoCountCtrl);
+                        scorePainting(originX, originY, width, height, cs, sameChr, rec, score);
                     }
                 }
             }
@@ -889,7 +914,6 @@ public class HeatmapRenderer {
                                    int originX, int originY, int width, int height, ColorScale cs, boolean sameChr) {
         float averageCount = (float) zd.getAverageCount();
         float ctrlAverageCount = (float) controlZD.getAverageCount();
-        float averageAcrossMapAndControl = (averageCount + ctrlAverageCount) / 2;
 
         if (blocks != null) {
             for (Block b : blocks) {
@@ -897,11 +921,9 @@ public class HeatmapRenderer {
                 if (recs != null) {
                     for (ContactRecord rec : recs) {
 
-                        float score = rec.getCounts();
-                        if (Float.isNaN(score) || Float.isInfinite(score)) continue;
-                        score = (score / averageCount) * averageAcrossMapAndControl;
+                        float score = comparisonVSScore(rec.getCounts(), averageCount, ctrlAverageCount);
 
-                        setColor(cs.getColor(score));
+                        setScore(score, cs);
 
                         aboveDiagonalPainting(originX, originY, width, height, rec);
                     }
@@ -914,11 +936,9 @@ public class HeatmapRenderer {
                 if (recs != null) {
                     for (ContactRecord rec : recs) {
 
-                        float score = rec.getCounts();
-                        if (Float.isNaN(score) || Float.isInfinite(score)) continue;
-                        score = (score / ctrlAverageCount) * averageAcrossMapAndControl;
+                        float score = comparisonVSScore(rec.getCounts(), ctrlAverageCount, averageCount);
 
-                        setColor(cs.getColor(score));
+                        setScore(score, cs);
                         belowDiagonalPainting(originX, originY, width, height, rec);
                     }
                 }
@@ -978,13 +998,10 @@ public class HeatmapRenderer {
                 if (recs != null) {
                     for (ContactRecord rec : recs) {
 
-                        float score = rec.getCounts();
-                        if (Float.isNaN(score) || Float.isInfinite(score)) continue;
-
                         float expected = getExpectedValue(df, chromosome, rec);
-                        score = (rec.getCounts() + pseudoCountObs) / (expected + pseudoCountObs);
+                        float score = observedOverExpectedScore(rec.getCounts(), expected, pseudoCountObs);
 
-                        setColor(cs.getColor(score));
+                        setScore(score, cs);
                         aboveDiagonalPainting(originX, originY, width, height, rec);
                     }
                 }
@@ -996,17 +1013,14 @@ public class HeatmapRenderer {
                 if (recs != null) {
                     for (ContactRecord rec : recs) {
 
-                        float score = rec.getCounts();
-                        if (Float.isNaN(score) || Float.isInfinite(score)) continue;
-
                         int binX = rec.getBinX();
                         int binY = rec.getBinY();
 
                         if (binX != binY) {
                             float expected = getExpectedValue(controlDF, chromosome, rec);
-                            score = (rec.getCounts() + pseudoCountCtrl) / (expected + pseudoCountCtrl);
+                            float score = observedOverExpectedScore(rec.getCounts(), expected, pseudoCountCtrl);
 
-                            setColor(cs.getColor(score));
+                            setScore(score, cs);
                             belowDiagonalPainting(originX, originY, width, height, rec);
                         }
                     }
@@ -1173,21 +1187,11 @@ public class HeatmapRenderer {
         // TODO -- need to check bounds before drawing
         for (int row = originY; row < endY; row++) {
             for (int col = originX; col < endX; col++) {
-
-                float score = bm1.getEntry(row, col);
-                Color color = colorScaleHandler.getDenseMatrixColor(key, score, colorScale, cs);
-                setColor(color);
-
+                float observedScore = bm1.getEntry(row, col);
+                float controlScore = bm2 == null ? observedScore : bm2.getEntry(row, col);
+                float score = comparisonTriangleValue(observedScore, controlScore, row, col);
+                setDenseScore(key, score, colorScale, cs);
                 directDensePainting(originX, originY, col, row);
-                // Assuming same chromosome
-                if (col != row) {
-                    if (bm2 != null) {
-                        float controlScore = bm2.getEntry(row, col);
-                        Color controlColor = colorScaleHandler.getDenseMatrixColor(key, controlScore, colorScale, cs);
-                        setColor(controlColor);
-                    }
-                    directDensePainting(originX, originY, row, col);
-                }
             }
         }
     }
@@ -1202,7 +1206,7 @@ public class HeatmapRenderer {
 
     private void simplePainting(ColorScale cs, int width, int height, boolean sameChr, int originX, int originY, ContactRecord rec, float score) {
         if (Float.isNaN(score) || Float.isInfinite(score)) return;
-        setColor(cs.getColor(score));
+        setScore(score, cs);
 
         aboveDiagonalPainting(originX, originY, width, height, rec);
         if (sameChr) belowDiagonalPainting(originX, originY, width, height, rec);
@@ -1211,14 +1215,19 @@ public class HeatmapRenderer {
     private boolean logPainting(ColorScale cs, float num, float den, float obsExpected, float ctrlExpected) {
         float score = (float) ((Math.log(num + 1) / Math.log(obsExpected + 1)) / (Math.log(den + 1) / Math.log(ctrlExpected + 1)));
         if (Float.isNaN(score) || Float.isInfinite(score)) return true;
-        setColor(cs.getColor(score));
+        setScore(score, cs);
         return false;
     }
 
     private void ratioPainting(int originX, int originY, int width, int height, ColorScale cs, boolean sameChr, ContactRecord rec, float num, float den) {
         float score = num / den;
         if (Float.isNaN(score) || Float.isInfinite(score)) return;
-        setColor(cs.getColor(score));
+        scorePainting(originX, originY, width, height, cs, sameChr, rec, score);
+    }
+
+    private void scorePainting(int originX, int originY, int width, int height, ColorScale cs, boolean sameChr, ContactRecord rec, float score) {
+        if (!Float.isFinite(score)) return;
+        setScore(score, cs);
         intraPainting2(originX, originY, width, height, sameChr, rec);
     }
 
@@ -1262,6 +1271,14 @@ public class HeatmapRenderer {
 
     protected void setColor(Color color) {
         g.setColor(color);
+    }
+
+    protected void setScore(float score, ColorScale colorScale) {
+        setColor(colorScale.getColor(score));
+    }
+
+    protected void setDenseScore(String key, float score, PearsonColorScale pearsonColorScale, ColorScale genericColorScale) {
+        setColor(colorScaleHandler.getDenseMatrixColor(key, score, pearsonColorScale, genericColorScale));
     }
 
     protected void directPixelPainting(int px, int py) {

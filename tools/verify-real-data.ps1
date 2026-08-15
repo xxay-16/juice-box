@@ -33,6 +33,56 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & $javac --release 25 -encoding UTF-8 -cp $JavaJar -d $probeRoot (Join-Path $root "src/juicebox/tools/utils/dev/HiCPearsonFingerprint.java")
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& $javac --release 25 -encoding UTF-8 -cp $JavaJar -d $probeRoot `
+    (Join-Path $root "src/juicebox/mapcolorui/HeatmapRenderer.java") `
+    (Join-Path $root "src/juicebox/tools/utils/dev/HiCComparisonRenderFingerprint.java")
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$comparisonModes = @("VS", "RATIO", "RATIOV2", "OEVS", "PEARSONVS")
+$comparisonHicRoot = Join-Path $root "__artifacts_temp/comparison-hic"
+New-Item -ItemType Directory -Force $comparisonHicRoot | Out-Null
+$comparisonObservedHic = Join-Path $comparisonHicRoot "observed.hic"
+$comparisonControlHic = Join-Path $comparisonHicRoot "control.hic"
+& $javaExe -cp $JavaJar juicebox.tools.HiCTools pre -n -r 500000 `
+    (Join-Path $root "tools/fixtures/comparison-observed.pairs") `
+    $comparisonObservedHic `
+    (Join-Path $root "tools/fixtures/comparison.chrom.sizes")
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& $javaExe -cp $JavaJar juicebox.tools.HiCTools pre -n -r 500000 `
+    (Join-Path $root "tools/fixtures/comparison-control.pairs") `
+    $comparisonControlHic `
+    (Join-Path $root "tools/fixtures/comparison.chrom.sizes")
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$env:JUICEBOX_ASYMMETRIC_OBSERVED_HIC = $comparisonObservedHic
+$env:JUICEBOX_ASYMMETRIC_CONTROL_HIC = $comparisonControlHic
+cargo test -q -p heatmap-wgpu real_distinct_control_fixture_exercises_dual_reader_comparison_modes -- --ignored
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+Write-Output "Distinct control fixture rendered: VS, Ratio/RatioV2, O/E-VS, Pearson-VS"
+$javaRenderComparison = & $javaExe -cp "$probeRoot;$JavaJar" `
+    juicebox.tools.utils.dev.HiCComparisonRenderFingerprint `
+    $comparisonObservedHic $comparisonControlHic
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$rustRenderComparison = cargo run -q -p heatmap-wgpu --bin hic-comparison-render -- `
+    $comparisonObservedHic $comparisonControlHic
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$javaRenderRows = @{}
+foreach ($line in $javaRenderComparison) {
+    if ($line -match 'render_mode=(\S+) cells=(\d+) bits=([0-9a-f,]+) fingerprint=([0-9a-f]+)') {
+        $javaRenderRows[$matches[1]] = @( $matches[2], $matches[3], $matches[4] )
+    }
+}
+$rustRenderRows = @{}
+foreach ($line in $rustRenderComparison) {
+    if ($line -match 'render_mode=(\S+) cells=(\d+) bits=([0-9a-f,]+) fingerprint=([0-9a-f]+)') {
+        $rustRenderRows[$matches[1]] = @( $matches[2], $matches[3], $matches[4] )
+    }
+}
+foreach ($mode in $comparisonModes) {
+    if (!$javaRenderRows.ContainsKey($mode) -or !$rustRenderRows.ContainsKey($mode) -or
+        @(Compare-Object $javaRenderRows[$mode] $rustRenderRows[$mode]).Count -ne 0) {
+        throw "Production render mismatch at ${mode}: Rust=$($rustRenderRows[$mode] -join ',') Java=$($javaRenderRows[$mode] -join ',')"
+    }
+}
+Write-Output "Production pixel-grid match: Java HeatmapRenderer.render vs Rust TileEngine (36 ordered cells per mode)"
 $java = & $javaExe -cp "$JavaJar;$probeRoot" juicebox.tools.utils.dev.HiCReaderFingerprint $HicFile 1_1
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -191,5 +241,5 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $env:JUICEBOX_REAL_HIC = [System.IO.Path]::GetFullPath($HicFile)
 cargo test -q -p heatmap-wgpu real_same_file_control_modes_match_observed_raw_bits -- --ignored
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-Write-Output "Control identity match: Observed/Control, O/E/Control-Expected, Pearson/Control-Pearson"
+Write-Output "Control identity match: isolated views plus VS, Ratio/RatioV2, O/E-VS, Pearson-VS"
 Write-Output "Real-data verification passed."

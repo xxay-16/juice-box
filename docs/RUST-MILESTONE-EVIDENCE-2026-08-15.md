@@ -52,8 +52,9 @@ double-bit fingerprint。
 
 使用 `genome.hic` 与 `genome.assembly` 的 Release EXE 实际执行：
 
-1. 长方形 1000x820 窗口中热图保持居中正方形。
-2. 小幅拖动只改变 shader transform，日志没有新 `tile displayed`。
+1. 默认窗口为 900x900 正方形；非正方形窗口仍以居中正方形绘制热图。
+2. 小幅拖动先由 shader transform 保持连续画面，并最多每 16 ms 提交一次最新 viewport；
+   48 ms idle settle 保证最终位置提交并触发两圈预取。
 3. 越出 1.5x overscan 后，Block 完成即流式填充；250 kb 完整 6/6 blocks 通常约
    120-160 ms，缓存命中场景无需等待磁盘读取。
 4. 滚轮缩放切到 100 kb LOD；串行基线为 448.9 ms，16 路并发位置读取后为
@@ -69,13 +70,28 @@ double-bit fingerprint。
 10. 真实 `genome.assembly` 对 scaffold 8 提取 debris，生成 163 scaffolds /
     33 superscaffolds，总长度仍为 617,772,809 bp；重绘、撤销、重做、保存和重新解析
     均通过。随后对 superscaffold 5 执行拆分与合并，generation 4/5 均完整显示。
-11. 最新 portable EXE 依次按 `M` 进入 Expected、O/E 和 Pearson；Pearson 在 NVIDIA
+11. 比较模式的 JDK 25 Gate 编译并优先加载当前生产 `HeatmapRenderer`，Rust 侧直接
+    复用 GUI `TileEngine`。早期两边复制相同数组的镜像 fixture 已移除，避免把实现
+    镜像误当成兼容性证据；权威对照只使用后述动态生成的不同 v9 `.hic`。
+12. `HiCTools pre` 从仓库内非对称 contact fixture 动态生成两份不同的 v9 `.hic`，
+    Rust observed/control 双 reader 实际完成上述五种比较模式；输出
+    `Distinct control fixture rendered: VS, Ratio/RatioV2, O/E-VS, Pearson-VS`。
+    此 Gate 同时发现并修复 v9 master-index entry size 仍为 32-bit 的兼容性问题。
+13. Java `DatasetReaderV2 -> HeatmapRenderer.render` 与 Rust `HicFile -> TileEngine`
+    在上述两份不同 v9 `.hic` 上逐模式比较有序 6×6 raw-float-bit 网格及包含格子
+    序号的 fingerprint；此 Gate 会检测像素交换、漏格和最终覆盖差异。它实际发现并
+    修复了 Pearson-VS 在 6 bins 映射到 1024 像素时的非整除边界偏移。VS、
+    RATIO/RATIOV2、OEVS、PEARSONVS 全部一致；完整输出保存在
+    `.omo/evidence/comparison-production-pixel-gate-2026-08-16.log`。
+14. 最新 portable EXE 依次按 `M` 进入 Expected、O/E 和 Pearson；Pearson 在 NVIDIA
     GeForce RTX 5070 Ti / Vulkan 上以 250 kb 完整显示红蓝相关热图，generation 3 的
     1024×1024 R32F 纹理上传为 4,194,304 bytes，热缓存场景约 1.45 s。
-12. 同一真实 `genome.hic` 作为 observed/control 的自动化 identity Gate 完整比较
+15. 同一真实 `genome.hic` 作为 observed/control 的自动化 identity Gate 完整比较
     Observed=Control、O/E=Control/ExpectedC、Pearson=Control Pearson 的 1024×1024
     float raw bits；两侧首次可见 Block 均有独立 cache miss。该测试由
     `tools/verify-real-data.ps1` 自动执行并输出 `Control identity match`。
+16. 同文件比较 Gate 进一步验证 VS 关于对角线对称、RATIO/RATIOV2 仅产生 0/1、
+    OEVS 与 observed O/E 一致、PearsonVS 与 observed Pearson 一致。
 
 对应开发期日志保存在本地未提交目录 `__artifacts_temp/`，正式运行日志写入：
 
@@ -98,7 +114,7 @@ Windows GUI subsystem, embeds the Juicebox icon, provides file dialogs and logs 
 
 ## Known remaining gates
 
-- Observed-vs-Control、ratio/difference 和其他比较型 MatrixType 语义。
+- difference 和其他高级比较型 MatrixType；真实异源 control 数据集 Gate。
 - 更高级 Assembly 多选、phase 与 Java UI 完整交互 parity。
 - Intel/AMD/NVIDIA and 125/150/200% DPI matrix.
 - 30-minute memory/performance soak.

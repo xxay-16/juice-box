@@ -352,11 +352,7 @@ impl HicFile {
         for _ in 0..master_count {
             let _key = read_c_string(&mut reader)?;
             let _position = read_u64(&mut reader)?;
-            if self.header.version > 8 {
-                let _size = read_u64(&mut reader)?;
-            } else {
-                let _size = read_u32(&mut reader)?;
-            }
+            let _size = read_u32(&mut reader)?;
         }
 
         let mut vectors = BTreeMap::new();
@@ -382,6 +378,9 @@ impl HicFile {
         }
 
         if self.header.version < 6 {
+            return Ok(vectors);
+        }
+        if normalized_position >= self.file.metadata()?.len() {
             return Ok(vectors);
         }
         reader.seek(SeekFrom::Start(normalized_position))?;
@@ -436,6 +435,9 @@ impl HicFile {
             .checked_add(length_field_bytes)
             .and_then(|position| position.checked_add(footer_bytes))
             .ok_or(HicError::InvalidNormalization("footer offset overflow"))?;
+        if normalization_position >= self.file.metadata()?.len() {
+            return Ok(BTreeMap::new());
+        }
         reader.seek(SeekFrom::Start(normalization_position))?;
 
         let normalized_expected_count =
@@ -835,11 +837,12 @@ pub fn read_master_index<R: Read + Seek>(
     for _ in 0..count {
         let key = read_c_string(reader)?;
         let position = read_u64(reader)?;
-        let size = if header.version > 8 {
-            read_u64(reader)?
-        } else {
-            u64::from(read_u32(reader)?)
-        };
+        // Matrix master-index entry sizes remain 32-bit in the v9 footer.
+        // Only the footer byte count, expected-vector lengths, chromosome
+        // lengths, and normalization index moved to 64-bit. Reading an u64
+        // here consumed the first four bytes of the next key and corrupted
+        // every entry after the first in Java-written v9 files.
+        let size = u64::from(read_u32(reader)?);
         index.insert(key, IndexEntry { position, size });
     }
     Ok(index)
@@ -1102,6 +1105,55 @@ mod tests {
         assert_eq!(header.chromosomes[0].length, 1000);
         assert_eq!(header.bp_resolutions, vec![5000]);
         assert_eq!(index["0_0"].position, 123);
+    }
+
+    #[test]
+    fn reads_v9_master_index_with_32_bit_entry_sizes() {
+        let mut bytes = Vec::new();
+        push_string(&mut bytes, "HIC");
+        bytes.extend_from_slice(&9_u32.to_le_bytes());
+        let footer_offset_position = bytes.len();
+        bytes.extend_from_slice(&0_u64.to_le_bytes());
+        push_string(&mut bytes, "test-genome");
+        bytes.extend_from_slice(&0_u64.to_le_bytes());
+        bytes.extend_from_slice(&0_u64.to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        push_string(&mut bytes, "chr1");
+        bytes.extend_from_slice(&1000_u64.to_le_bytes());
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.extend_from_slice(&500_u32.to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+
+        let footer = bytes.len() as u64;
+        bytes[footer_offset_position..footer_offset_position + 8]
+            .copy_from_slice(&footer.to_le_bytes());
+        bytes.extend_from_slice(&64_u64.to_le_bytes());
+        bytes.extend_from_slice(&2_u32.to_le_bytes());
+        push_string(&mut bytes, "0_0");
+        bytes.extend_from_slice(&123_u64.to_le_bytes());
+        bytes.extend_from_slice(&45_u32.to_le_bytes());
+        push_string(&mut bytes, "1_1");
+        bytes.extend_from_slice(&456_u64.to_le_bytes());
+        bytes.extend_from_slice(&78_u32.to_le_bytes());
+
+        let mut cursor = Cursor::new(bytes);
+        let header = read_header(&mut cursor).unwrap();
+        let index = read_master_index(&mut cursor, &header).unwrap();
+        assert_eq!(
+            index["0_0"],
+            IndexEntry {
+                position: 123,
+                size: 45
+            }
+        );
+        assert_eq!(
+            index["1_1"],
+            IndexEntry {
+                position: 456,
+                size: 78
+            }
+        );
     }
 
     #[test]
