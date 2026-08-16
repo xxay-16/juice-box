@@ -29,6 +29,7 @@ fn main() -> Result<()> {
     let mut arguments = std::env::args_os().skip(1);
     let observed = PathBuf::from(arguments.next().context("missing observed .hic")?);
     let control = PathBuf::from(arguments.next().context("missing control .hic")?);
+    let normalized = arguments.next().map(PathBuf::from);
     let file = HicFile::open(&observed)?;
     let matrix = file.read_matrix("1_1")?;
     let chromosome = &file.header.chromosomes[matrix.chromosome_1 as usize];
@@ -62,6 +63,24 @@ fn main() -> Result<()> {
         engine.request(viewport);
         let tile = wait_complete(&engine, viewport.generation)?;
         print_cells(mode_name(matrix_type), &tile);
+    }
+    if let Some(normalized) = normalized {
+        let normalized_file = HicFile::open(&normalized)?;
+        let normalized_matrix = normalized_file.read_matrix("1_1")?;
+        let normalized_chromosome =
+            &normalized_file.header.chromosomes[normalized_matrix.chromosome_1 as usize];
+        let normalized_engine =
+            TileEngine::spawn(normalized.clone(), "1_1".to_owned(), None, Some(normalized))?;
+        normalized_engine.update_normalization(tile_engine::Normalization::Kr);
+        normalized_engine.update_control_normalization(tile_engine::Normalization::Kr);
+        let mut normalized_viewport = GenomeViewport::new(normalized_chromosome.length, 1.0);
+        for matrix_type in MatrixType::NORM_SQUARED_MODES {
+            normalized_engine.update_matrix_type(matrix_type);
+            normalized_viewport.generation = normalized_viewport.generation.wrapping_add(1);
+            normalized_engine.request(normalized_viewport);
+            let tile = wait_complete(&normalized_engine, normalized_viewport.generation)?;
+            print_cells(mode_name(matrix_type), &tile);
+        }
     }
     Ok(())
 }
@@ -123,6 +142,9 @@ fn mode_name(matrix_type: MatrixType) -> &'static str {
         MatrixType::LogRatioV2 => "LOGRATIOV2",
         MatrixType::LogExpectedRatio => "LOGEORATIO",
         MatrixType::LogExpectedRatioV2 => "LOGEORATIOV2",
+        MatrixType::NormSquared => "NORM2",
+        MatrixType::ControlNormSquared => "NORM2CTRL",
+        MatrixType::NormSquaredVs => "NORM2OBSVSCTRL",
         _ => unreachable!(),
     }
 }

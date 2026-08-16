@@ -721,10 +721,24 @@ impl App {
 
     fn consume_results(&mut self, window: &Window) {
         while let Some(result) = self.engine.try_result() {
+            // The first streamed update is always a whole texture; later
+            // updates only carry a dirty rectangle.  A superseded whole
+            // texture which still covers the cursor is a useful bridge while
+            // the newest request decompresses.  Once installed, accept only
+            // its own follow-up rectangles.  This prevents an old partial
+            // upload from being written into a newer texture, which made a
+            // pan appear to stop filling after the first block.
+            let result_is_displayable = result.as_ref().ok().is_some_and(|tile| {
+                should_display_tile_result(
+                    self.requested_viewport,
+                    self.displayed_viewport,
+                    tile.viewport,
+                    tile.dirty_rect,
+                )
+            });
             match result {
                 Ok(result)
-                    if result.viewport.generation >= self.displayed_viewport.generation
-                        && result.viewport.generation <= self.requested_viewport.generation
+                    if result_is_displayable
                         && result.assembly_version == self.assembly_version
                         && result.normalization == self.active_normalization()
                         && result.matrix_type == self.matrix_type =>
@@ -798,19 +812,10 @@ impl App {
                             result.dirty_rect,
                         );
                     }
-                    // A completed tile can legitimately be older than the
-                    // most recent cursor position: drag events are coalesced
-                    // while the worker is reading/decompressing blocks.  Do
-                    // not leave that newer viewport dependent on the old
-                    // prediction forever.  Re-evaluate coverage *after* the
-                    // texture is installed, and queue the next tile if this
-                    // texture cannot keep an edge margin around it.
-                    //
-                    // Without this second check, `schedule_request` may have
-                    // cleared `request_pending` because the then-in-flight
-                    // overscan looked sufficient.  Once an older result wins
-                    // the display, no new pointer event is required to reveal
-                    // the stale state, so uncovered portions can remain dark.
+                    // Re-evaluate coverage after the exact-current texture is
+                    // installed.  This keeps moving the prefetch rings if a
+                    // coalesced pointer update advanced again while this tile
+                    // was being decompressed.
                     if result.complete
                         && viewport_needs_refresh(self.requested_viewport, self.completed_viewport)
                     {
@@ -1210,6 +1215,23 @@ impl ApplicationHandler for App {
                     }
                     PhysicalKey::Code(KeyCode::KeyM) => {
                         self.matrix_type = self.matrix_type.next(self.control_available);
+                        if matches!(
+                            self.matrix_type,
+                            MatrixType::NormSquared | MatrixType::NormSquaredVs
+                        ) && self.normalization == Normalization::None
+                        {
+                            self.normalization = Normalization::Kr;
+                            self.engine.update_normalization(self.normalization);
+                        }
+                        if matches!(
+                            self.matrix_type,
+                            MatrixType::ControlNormSquared | MatrixType::NormSquaredVs
+                        ) && self.control_normalization == Normalization::None
+                        {
+                            self.control_normalization = Normalization::Kr;
+                            self.engine
+                                .update_control_normalization(self.control_normalization);
+                        }
                         self.engine.update_matrix_type(self.matrix_type);
                         self.requested_viewport.generation =
                             self.requested_viewport.generation.wrapping_add(1);
@@ -1336,6 +1358,19 @@ fn cursor_in_square(cursor: PhysicalPosition<f64>, size: PhysicalSize<u32>) -> [
 
 fn viewport_needs_refresh(requested: GenomeViewport, displayed: GenomeViewport) -> bool {
     !viewport_can_serve(requested, displayed, true)
+}
+
+fn should_display_tile_result(
+    requested: GenomeViewport,
+    displayed: GenomeViewport,
+    result: GenomeViewport,
+    dirty_rect: Option<[u32; 4]>,
+) -> bool {
+    if result.generation == requested.generation {
+        return true;
+    }
+    let covers_requested = viewport_can_serve(requested, result, false);
+    covers_requested && (result.generation == displayed.generation || dirty_rect.is_none())
 }
 
 fn viewport_can_serve(
@@ -1678,6 +1713,56 @@ mod tests {
             [1024, 1024],
             &tile,
             [1023, 741, 3, 2]
+        ));
+    }
+
+    #[test]
+    fn current_generation_stream_updates_are_displayed() {
+        let mut requested = GenomeViewport::new(1_000, 0.4);
+        requested.generation = 8;
+        let mut displayed = rendered_viewport_for(requested);
+        displayed.generation = 7;
+        let result = requested;
+        assert!(should_display_tile_result(
+            requested,
+            displayed,
+            result,
+            Some([10, 10, 20, 20])
+        ));
+    }
+
+    #[test]
+    fn old_partial_update_cannot_overwrite_a_newer_displayed_texture() {
+        let mut requested = GenomeViewport::new(1_000, 0.4);
+        requested.generation = 8;
+        let mut displayed = rendered_viewport_for(requested);
+        displayed.generation = 8;
+        let mut stale = rendered_viewport_for(requested);
+        stale.generation = 7;
+        assert!(!should_display_tile_result(
+            requested,
+            displayed,
+            stale,
+            Some([10, 10, 20, 20])
+        ));
+    }
+
+    #[test]
+    fn covering_old_full_texture_can_bridge_to_the_current_generation() {
+        let mut requested = GenomeViewport::new(1_000, 0.4);
+        requested.generation = 8;
+        let mut displayed = requested;
+        displayed.generation = 6;
+        let mut covering = rendered_viewport_for(requested);
+        covering.generation = 7;
+        assert!(should_display_tile_result(
+            requested, displayed, covering, None
+        ));
+        assert!(!should_display_tile_result(
+            requested,
+            displayed,
+            covering,
+            Some([10, 10, 20, 20])
         ));
     }
 

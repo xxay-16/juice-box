@@ -45,7 +45,8 @@ $comparisonModes = @(
     "EXPLOGEO", "EXPLOGCEO", "OCMEVS", "DIFF",
     "RATIOP1", "RATIOP1V2", "RATIO0", "RATIO0V2", "RATIO0P1", "RATIO0P1V2",
     "OERATIO", "OERATIOV2", "OERATIOP1", "OERATIOP1V2", "OERATIOMINUS", "OERATIOMINUSP1",
-    "LOGVS", "LOGRATIO", "LOGRATIOV2", "LOGEORATIO", "LOGEORATIOV2"
+    "LOGVS", "LOGRATIO", "LOGRATIOV2", "LOGEORATIO", "LOGEORATIOV2",
+    "NORM2", "NORM2CTRL", "NORM2OBSVSCTRL"
 )
 $comparisonHicRoot = Join-Path $root "__artifacts_temp/comparison-hic"
 New-Item -ItemType Directory -Force $comparisonHicRoot | Out-Null
@@ -68,10 +69,10 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Output "Distinct control fixture rendered: standard modes plus expected pseudocount and transform/subtraction modes"
 $javaRenderComparison = & $javaExe -cp "$probeRoot;$JavaJar" `
     juicebox.tools.utils.dev.HiCComparisonRenderFingerprint `
-    $comparisonObservedHic $comparisonControlHic
+    $comparisonObservedHic $comparisonControlHic $HicFile
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $rustRenderComparison = cargo run -q -p heatmap-wgpu --bin hic-comparison-render -- `
-    $comparisonObservedHic $comparisonControlHic
+    $comparisonObservedHic $comparisonControlHic $HicFile
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $javaRenderRows = @{}
 foreach ($line in $javaRenderComparison) {

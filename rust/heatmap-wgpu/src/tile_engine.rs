@@ -153,13 +153,16 @@ pub enum MatrixType {
     LogRatioV2,
     LogExpectedRatio,
     LogExpectedRatioV2,
+    NormSquared,
+    ControlNormSquared,
+    NormSquaredVs,
     PearsonVs,
 }
 
 impl MatrixType {
     /// First advanced-view family implemented behind the production parity
-    /// gate. The standard keyboard cycle remains unchanged until the complete
-    /// Java advanced menu can be exposed as one coherent UI option.
+    /// gate. These arrays also keep the standalone parity binary exhaustive;
+    /// the main viewer exposes the fully gated families through its mode cycle.
     #[allow(
         dead_code,
         reason = "the primary viewer keeps the standard Java menu until the complete advanced menu is ready"
@@ -216,6 +219,15 @@ impl MatrixType {
         Self::LogRatioV2,
         Self::LogExpectedRatio,
         Self::LogExpectedRatioV2,
+    ];
+    #[allow(
+        dead_code,
+        reason = "advanced modes are exercised by the production parity binary before the UI menu is complete"
+    )]
+    pub const NORM_SQUARED_MODES: [Self; 3] = [
+        Self::NormSquared,
+        Self::ControlNormSquared,
+        Self::NormSquaredVs,
     ];
 
     pub fn label(self) -> &'static str {
@@ -282,6 +294,9 @@ impl MatrixType {
             Self::LogExpectedRatioV2 => {
                 "Log[(Log[Observed+1]/Log[Expected+1])/(Log[Control+1]/Log[ExpectedC+1])]"
             }
+            Self::NormSquared => "Observed Norm^2",
+            Self::ControlNormSquared => "Control Norm^2",
+            Self::NormSquaredVs => "Observed Norm^2 vs Control Norm^2",
             Self::PearsonVs => "Observed Pearson vs Control Pearson",
         }
     }
@@ -292,7 +307,8 @@ impl MatrixType {
                 Self::Observed => Self::Expected,
                 Self::Expected => Self::ObservedOverExpected,
                 Self::ObservedOverExpected => Self::ObservedOverExpectedV2,
-                Self::ObservedOverExpectedV2 => Self::Pearson,
+                Self::ObservedOverExpectedV2 => Self::NormSquared,
+                Self::NormSquared => Self::Pearson,
                 Self::Pearson => Self::LogObserved,
                 _ => Self::Observed,
             };
@@ -309,7 +325,10 @@ impl MatrixType {
             Self::ObservedOverExpectedVs => Self::ObservedOverExpectedV2,
             Self::ObservedOverExpectedV2 => Self::ControlOverExpectedV2,
             Self::ControlOverExpectedV2 => Self::ObservedOverExpectedVsV2,
-            Self::ObservedOverExpectedVsV2 => Self::Pearson,
+            Self::ObservedOverExpectedVsV2 => Self::NormSquared,
+            Self::NormSquared => Self::ControlNormSquared,
+            Self::ControlNormSquared => Self::NormSquaredVs,
+            Self::NormSquaredVs => Self::Pearson,
             Self::Pearson => Self::ControlPearson,
             Self::ControlPearson => Self::PearsonVs,
             Self::PearsonVs => Self::LogObserved,
@@ -363,6 +382,7 @@ impl MatrixType {
                 | Self::LogControlExpected
                 | Self::ExpLogControlExpected
                 | Self::ControlMinusExpected
+                | Self::ControlNormSquared
         )
     }
 
@@ -423,6 +443,7 @@ impl MatrixType {
                 | Self::LogRatioV2
                 | Self::LogExpectedRatio
                 | Self::LogExpectedRatioV2
+                | Self::NormSquaredVs
                 | Self::PearsonVs
         )
     }
@@ -761,7 +782,7 @@ fn build_tile_streaming(
     // Expected uses the footer vector directly; no per-bin normalization
     // vector is needed to build its dense diagonal field.  Observed and O/E
     // retain Java's normalized-contact calculation before rasterization.
-    let normalization_vector = matches!(
+    let contact_normalization_vector = matches!(
         request.matrix_type,
         MatrixType::Observed
             | MatrixType::ObservedOverExpected
@@ -801,6 +822,50 @@ fn build_tile_streaming(
         .transpose()?;
     let rendered_viewport = rendered_viewport_for(request.viewport);
     let bin_bounds = viewport_bin_bounds(rendered_viewport, zoom.bin_size);
+    if matches!(
+        request.matrix_type,
+        MatrixType::NormSquared | MatrixType::ControlNormSquared
+    ) {
+        let vector_x = normalization_vector_at_resolution(
+            file,
+            matrix.chromosome_1,
+            normalization,
+            normalization_cache,
+            zoom.bin_size,
+        )?
+        .context("Norm^2 requires a stored normalization vector")?;
+        let vector_y = normalization_vector_at_resolution(
+            file,
+            matrix.chromosome_2,
+            normalization,
+            normalization_cache,
+            zoom.bin_size,
+        )?
+        .context("Norm^2 requires a stored normalization vector")?;
+        let values = rasterize_norm_squared(
+            vector_x.as_slice(),
+            vector_y.as_slice(),
+            bin_bounds,
+            zoom.bin_size,
+            assembly_map,
+        );
+        send_stream_result(
+            sender,
+            &request,
+            rendered_viewport,
+            zoom.bin_size,
+            &values,
+            0,
+            0,
+            0,
+            0,
+            0,
+            true,
+            None,
+            started,
+        )?;
+        return Ok(Some(rendered_viewport));
+    }
     if request.matrix_type.is_pearson() {
         let pearson = pearson_matrix(
             file,
@@ -904,7 +969,7 @@ fn build_tile_streaming(
             symmetric,
             zoom,
             assembly_map,
-            normalization_vector.as_deref().map(Vec::as_slice),
+            contact_normalization_vector.as_deref().map(Vec::as_slice),
             expected_vector.as_deref(),
             request.matrix_type,
             matrix.chromosome_1,
@@ -952,7 +1017,7 @@ fn build_tile_streaming(
             symmetric,
             zoom,
             assembly_map,
-            normalization_vector.as_deref().map(Vec::as_slice),
+            contact_normalization_vector.as_deref().map(Vec::as_slice),
             expected_vector.as_deref(),
             request.matrix_type,
             matrix.chromosome_1,
@@ -1039,6 +1104,71 @@ fn build_comparison_tile(
     .context("observed and control have no common compatible base-pair zoom")?;
     let rendered_viewport = rendered_viewport_for(request.viewport);
     let bin_bounds = viewport_bin_bounds(rendered_viewport, observed_zoom.bin_size);
+    if request.matrix_type == MatrixType::NormSquaredVs {
+        let observed_vector_x = normalization_vector_at_resolution(
+            observed_file,
+            observed_matrix.chromosome_1,
+            request.observed_normalization,
+            &mut observed_state.normalization_cache,
+            observed_zoom.bin_size,
+        )?
+        .context("observed Norm^2 requires a stored normalization vector")?;
+        let observed_vector_y = normalization_vector_at_resolution(
+            observed_file,
+            observed_matrix.chromosome_2,
+            request.observed_normalization,
+            &mut observed_state.normalization_cache,
+            observed_zoom.bin_size,
+        )?
+        .context("observed Norm^2 requires a stored normalization vector")?;
+        let control_vector_x = normalization_vector_at_resolution(
+            control_file,
+            control_matrix.chromosome_1,
+            request.control_normalization,
+            &mut control_state.normalization_cache,
+            control_zoom.bin_size,
+        )?
+        .context("control Norm^2 requires a stored normalization vector")?;
+        let control_vector_y = normalization_vector_at_resolution(
+            control_file,
+            control_matrix.chromosome_2,
+            request.control_normalization,
+            &mut control_state.normalization_cache,
+            control_zoom.bin_size,
+        )?
+        .context("control Norm^2 requires a stored normalization vector")?;
+        let observed_values = rasterize_norm_squared(
+            observed_vector_x.as_slice(),
+            observed_vector_y.as_slice(),
+            bin_bounds,
+            observed_zoom.bin_size,
+            request.assembly_map.as_deref(),
+        );
+        let control_values = rasterize_norm_squared(
+            control_vector_x.as_slice(),
+            control_vector_y.as_slice(),
+            bin_bounds,
+            control_zoom.bin_size,
+            request.assembly_map.as_deref(),
+        );
+        let values = combine_triangles(&observed_values, &control_values);
+        send_stream_result(
+            sender,
+            &request,
+            rendered_viewport,
+            observed_zoom.bin_size,
+            &values,
+            0,
+            0,
+            0,
+            0,
+            0,
+            true,
+            None,
+            started,
+        )?;
+        return Ok(Some(rendered_viewport));
+    }
     if matches!(
         request.matrix_type,
         MatrixType::Ratio
@@ -1990,8 +2120,12 @@ fn accumulate_block(
                 | MatrixType::LogRatioV2
                 | MatrixType::LogExpectedRatio
                 | MatrixType::LogExpectedRatioV2
-                | MatrixType::PearsonVs => {
+                | MatrixType::PearsonVs
+                | MatrixType::NormSquaredVs => {
                     unreachable!("comparison tiles use the dual-dataset path")
+                }
+                MatrixType::NormSquared | MatrixType::ControlNormSquared => {
+                    unreachable!("Norm^2 tiles use the dense normalization-vector path")
                 }
             };
             Some((bin_x, bin_y, counts))
@@ -2082,6 +2216,9 @@ fn matrix_type_id(matrix_type: MatrixType) -> u32 {
         MatrixType::LogRatioV2 => 46,
         MatrixType::LogExpectedRatio => 47,
         MatrixType::LogExpectedRatioV2 => 48,
+        MatrixType::NormSquared => 49,
+        MatrixType::ControlNormSquared => 50,
+        MatrixType::NormSquaredVs => 51,
     }
 }
 
@@ -2271,6 +2408,45 @@ fn rasterize_dense_pearson(
     values
 }
 
+fn rasterize_norm_squared(
+    vector_x: &[f64],
+    vector_y: &[f64],
+    bin_bounds: [i32; 4],
+    bin_size: u32,
+    assembly_map: Option<&AssemblyCoordinateMap>,
+) -> Vec<f32> {
+    let output_size = OUTPUT_SIZE as usize;
+    let width_bins = (bin_bounds[2] - bin_bounds[0] + 1).max(1) as usize;
+    let height_bins = (bin_bounds[3] - bin_bounds[1] + 1).max(1) as usize;
+    let mut values = vec![f32::NAN; output_size * output_size];
+    for y in 0..output_size {
+        let displayed_y = bin_bounds[1]
+            + i32::try_from(output_pixel_to_source_bin(y, height_bins, output_size))
+                .unwrap_or(i32::MAX);
+        let Some(source_y) = dense_source_bin(displayed_y, bin_size, assembly_map) else {
+            continue;
+        };
+        let Some(&norm_y) = vector_y.get(source_y) else {
+            continue;
+        };
+        for x in 0..output_size {
+            let displayed_x = bin_bounds[0]
+                + i32::try_from(output_pixel_to_source_bin(x, width_bins, output_size))
+                    .unwrap_or(i32::MAX);
+            let Some(source_x) = dense_source_bin(displayed_x, bin_size, assembly_map) else {
+                continue;
+            };
+            let Some(&norm_x) = vector_x.get(source_x) else {
+                continue;
+            };
+            let distance = source_x.abs_diff(source_y).max(1) as f64;
+            let score = 1.0 / (norm_x * norm_y * distance.powi(4));
+            values[y * output_size + x] = score as f32;
+        }
+    }
+    values
+}
+
 /// Inverse of the sparse-contact raster boundary
 /// `floor(source_bin * output_size / source_bins)`.  A simple
 /// `floor(pixel * source_bins / output_size)` maps the first pixel of most
@@ -2342,7 +2518,20 @@ fn normalization_vector(
         return Ok(None);
     }
     let zoom = choose_zoom(matrix, target_bp_per_pixel).context("matrix has no base-pair zoom")?;
-    let cache_key = (normalization, chromosome, zoom.bin_size);
+    normalization_vector_at_resolution(file, chromosome, normalization, cache, zoom.bin_size)
+}
+
+fn normalization_vector_at_resolution(
+    file: &HicFile,
+    chromosome: u32,
+    normalization: Normalization,
+    cache: &mut HashMap<(Normalization, u32, u32), Arc<Vec<f64>>>,
+    resolution: u32,
+) -> Result<Option<Arc<Vec<f64>>>> {
+    if normalization == Normalization::None {
+        return Ok(None);
+    }
+    let cache_key = (normalization, chromosome, resolution);
     if let Some(vector) = cache.get(&cache_key) {
         return Ok(Some(Arc::clone(vector)));
     }
@@ -2350,7 +2539,7 @@ fn normalization_vector(
         normalization: normalization.label().to_owned(),
         chromosome,
         unit: MatrixUnit::BasePairs,
-        resolution: zoom.bin_size,
+        resolution,
     };
     let vector = file.read_normalization_vector(&key)?.with_context(|| {
         format!(
@@ -3340,6 +3529,53 @@ mod tests {
     }
 
     #[test]
+    fn norm_squared_matches_java_double_formula_then_float_cast() {
+        let vector_x = [2.0, 4.0];
+        let vector_y = [5.0, 10.0];
+        let raster = rasterize_norm_squared(&vector_x, &vector_y, [0, 0, 1, 1], 1, None);
+        let size = OUTPUT_SIZE as usize;
+        let second_bin = size / 2;
+        assert_eq!(
+            raster[0].to_bits(),
+            ((1.0_f64 / (2.0 * 5.0)) as f32).to_bits()
+        );
+        assert_eq!(
+            raster[second_bin].to_bits(),
+            ((1.0_f64 / (4.0 * 5.0)) as f32).to_bits()
+        );
+        assert_eq!(
+            raster[second_bin * size].to_bits(),
+            ((1.0_f64 / (2.0 * 10.0)) as f32).to_bits()
+        );
+    }
+
+    #[test]
+    fn norm_squared_uses_one_for_diagonal_and_adjacent_distance() {
+        let vector = [2.0, 3.0, 5.0];
+        let raster = rasterize_norm_squared(&vector, &vector, [0, 0, 2, 2], 1, None);
+        let size = OUTPUT_SIZE as usize;
+        let bin_one = size / 3;
+        let bin_two = size * 2 / 3;
+        assert_eq!(raster[0], (1.0_f64 / 4.0) as f32);
+        assert_eq!(raster[bin_one], (1.0_f64 / 6.0) as f32);
+        assert_eq!(raster[bin_two], (1.0_f64 / (10.0 * 16.0)) as f32);
+    }
+
+    #[test]
+    fn norm_squared_maps_assembly_coordinates_before_distance() {
+        let document = AssemblyDocument::parse(">a 1 10\n>b 2 10\n-2 1\n").unwrap();
+        let map = document.coordinate_map().unwrap();
+        let vector = [1.0, 2.0, 3.0, 4.0];
+        let raster = rasterize_norm_squared(&vector, &vector, [0, 0, 3, 3], 5, Some(&map));
+        let source = dense_source_bin(0, 5, Some(&map)).unwrap();
+        assert_eq!(source, 3);
+        assert_eq!(
+            raster[0],
+            (1.0_f64 / (vector[source] * vector[source])) as f32
+        );
+    }
+
+    #[test]
     fn pearson_lod_never_selects_a_dense_matrix_above_the_memory_budget() {
         let zoom = |bin_size| MatrixZoom {
             unit: MatrixUnit::BasePairs,
@@ -3388,7 +3624,7 @@ mod tests {
     fn matrix_type_cycle_exposes_control_only_when_a_dataset_is_loaded() {
         let mut without_control = MatrixType::Observed;
         let mut observed_cycle = Vec::new();
-        for _ in 0..6 {
+        for _ in 0..7 {
             observed_cycle.push(without_control);
             without_control = without_control.next(false);
         }
@@ -3399,6 +3635,7 @@ mod tests {
                 MatrixType::Expected,
                 MatrixType::ObservedOverExpected,
                 MatrixType::ObservedOverExpectedV2,
+                MatrixType::NormSquared,
                 MatrixType::Pearson,
                 MatrixType::LogObserved,
             ]
@@ -3407,7 +3644,7 @@ mod tests {
 
         let mut with_control = MatrixType::Observed;
         let mut control_cycle = Vec::new();
-        for _ in 0..18 {
+        for _ in 0..21 {
             control_cycle.push(with_control);
             with_control = with_control.next(true);
         }
@@ -3426,6 +3663,9 @@ mod tests {
                 MatrixType::ObservedOverExpectedV2,
                 MatrixType::ControlOverExpectedV2,
                 MatrixType::ObservedOverExpectedVsV2,
+                MatrixType::NormSquared,
+                MatrixType::ControlNormSquared,
+                MatrixType::NormSquaredVs,
                 MatrixType::Pearson,
                 MatrixType::ControlPearson,
                 MatrixType::PearsonVs,

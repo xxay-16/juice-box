@@ -13,6 +13,7 @@ import juicebox.mapcolorui.PearsonColorScale;
 import juicebox.windowui.HiCZoom;
 import juicebox.windowui.MatrixType;
 import juicebox.windowui.NormalizationHandler;
+import juicebox.windowui.NormalizationType;
 import org.broad.igv.renderer.ColorScale;
 
 import java.awt.Color;
@@ -28,8 +29,8 @@ public final class HiCComparisonRenderFingerprint {
     }
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 2) {
-            throw new IllegalArgumentException("usage: HiCComparisonRenderFingerprint <observed.hic> <control.hic>");
+        if (args.length != 2 && args.length != 3) {
+            throw new IllegalArgumentException("usage: HiCComparisonRenderFingerprint <observed.hic> <control.hic> [normalized.hic]");
         }
         Dataset observed = new DatasetReaderV2(args[0]).read();
         Dataset control = new DatasetReaderV2(args[1]).read();
@@ -61,17 +62,76 @@ public final class HiCComparisonRenderFingerprint {
                 MatrixType.OERATIOMINUS, MatrixType.OERATIOMINUSP1,
                 MatrixType.LOGVS, MatrixType.LOGRATIO, MatrixType.LOGRATIOV2,
                 MatrixType.LOGEORATIO, MatrixType.LOGEORATIOV2}) {
-            BufferedImage image = new BufferedImage(6, 6, BufferedImage.TYPE_INT_ARGB);
-            Graphics2D graphics = image.createGraphics();
-            RecordingRenderer renderer = new RecordingRenderer(graphics, new ColorScaleHandler(), 6, 6);
-            boolean rendered = renderer.render(
-                    0, 0, 6, 6, observedZoom, controlZoom, mode,
+            renderAndPrint(mode, observedZoom, controlZoom,
                     NormalizationHandler.NONE, NormalizationHandler.NONE,
-                    observedExpected, controlExpected, true);
-            graphics.dispose();
-            if (!rendered) throw new IllegalStateException("renderer rejected " + mode);
-            print(mode.name(), renderer.cells());
+                    observedExpected, controlExpected);
         }
+
+        if (args.length == 3) {
+            Dataset normalized = new DatasetReaderV2(args[2]).read();
+            var normalizedChromosome = normalized.getChromosomeHandler().getChromosomeFromIndex(1);
+            MatrixZoomData normalizedZoom = normalized.getMatrix(normalizedChromosome, normalizedChromosome).getZoomData(zoom);
+            ExpectedValueFunction normalizedExpected =
+                    normalized.getExpectedValues(zoom, NormalizationHandler.NONE);
+            int sourceBins = (int) ((normalizedChromosome.getLength() + zoom.getBinSize() - 1L)
+                    / zoom.getBinSize());
+            int[] sampleBins = sampleBins(sourceBins);
+            for (MatrixType mode : new MatrixType[]{
+                    MatrixType.NORM2, MatrixType.NORM2CTRL, MatrixType.NORM2OBSVSCTRL}) {
+                renderDenseAndPrint(mode, normalizedZoom, normalizedZoom,
+                        NormalizationHandler.KR, NormalizationHandler.KR,
+                        normalizedExpected, normalizedExpected, sampleBins);
+            }
+        }
+    }
+
+    private static void renderAndPrint(MatrixType mode, MatrixZoomData observedZoom,
+                                       MatrixZoomData controlZoom,
+                                       NormalizationType observedNormalization,
+                                       NormalizationType controlNormalization,
+                                       ExpectedValueFunction observedExpected,
+                                       ExpectedValueFunction controlExpected) {
+        BufferedImage image = new BufferedImage(6, 6, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D graphics = image.createGraphics();
+        RecordingRenderer renderer = new RecordingRenderer(graphics, new ColorScaleHandler(), 6, 6);
+        boolean rendered = renderer.render(
+                0, 0, 6, 6, observedZoom, controlZoom, mode,
+                observedNormalization, controlNormalization,
+                observedExpected, controlExpected, true);
+        graphics.dispose();
+        if (!rendered) throw new IllegalStateException("renderer rejected " + mode);
+        print(mode.name(), renderer.cells());
+    }
+
+    private static void renderDenseAndPrint(MatrixType mode, MatrixZoomData observedZoom,
+                                            MatrixZoomData controlZoom,
+                                            NormalizationType observedNormalization,
+                                            NormalizationType controlNormalization,
+                                            ExpectedValueFunction observedExpected,
+                                            ExpectedValueFunction controlExpected,
+                                            int[] sampleBins) {
+        int matrixSize = sampleBins[sampleBins.length - 1] + 1;
+        BufferedImage image = new BufferedImage(6, 6, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D graphics = image.createGraphics();
+        RecordingRenderer renderer =
+                new RecordingRenderer(graphics, new ColorScaleHandler(), sampleBins);
+        boolean rendered = renderer.render(
+                0, 0, matrixSize, matrixSize, observedZoom, controlZoom, mode,
+                observedNormalization, controlNormalization,
+                observedExpected, controlExpected, true);
+        graphics.dispose();
+        if (!rendered) throw new IllegalStateException("renderer rejected " + mode);
+        print(mode.name(), renderer.cells());
+    }
+
+    private static int[] sampleBins(int sourceBins) {
+        int[] bins = new int[6];
+        for (int index = 0; index < bins.length; index++) {
+            int pixel = index * 1024 / bins.length;
+            bins[index] = Math.min(sourceBins - 1,
+                    Math.max(0, ((pixel + 1) * sourceBins + 1023) / 1024 - 1));
+        }
+        return bins;
     }
 
     private static void print(String mode, float[] cells) {
@@ -94,6 +154,7 @@ public final class HiCComparisonRenderFingerprint {
         private final int width;
         private final int height;
         private final float[] cells;
+        private final int[] sampleBins;
         private float pendingScore = Float.NaN;
 
         RecordingRenderer(Graphics2D graphics, ColorScaleHandler handler, int width, int height) {
@@ -101,6 +162,15 @@ public final class HiCComparisonRenderFingerprint {
             this.width = width;
             this.height = height;
             this.cells = new float[width * height];
+            this.sampleBins = null;
+        }
+
+        RecordingRenderer(Graphics2D graphics, ColorScaleHandler handler, int[] sampleBins) {
+            super(graphics, handler);
+            this.width = sampleBins.length;
+            this.height = sampleBins.length;
+            this.cells = new float[width * height];
+            this.sampleBins = sampleBins;
         }
 
         float[] cells() {
@@ -122,10 +192,25 @@ public final class HiCComparisonRenderFingerprint {
 
         @Override
         protected void directPixelPainting(int px, int py) {
-            if (px >= 0 && px < width && py >= 0 && py < height) {
-                cells[py * width + px] = pendingScore;
+            if (sampleBins == null) {
+                if (px >= 0 && px < width && py >= 0 && py < height) {
+                    cells[py * width + px] = pendingScore;
+                }
+            } else {
+                int sampleX = sampleIndex(px);
+                int sampleY = sampleIndex(py);
+                if (sampleX >= 0 && sampleY >= 0) {
+                    cells[sampleY * width + sampleX] = pendingScore;
+                }
             }
             super.directPixelPainting(px, py);
+        }
+
+        private int sampleIndex(int bin) {
+            for (int index = 0; index < sampleBins.length; index++) {
+                if (sampleBins[index] == bin) return index;
+            }
+            return -1;
         }
     }
 }

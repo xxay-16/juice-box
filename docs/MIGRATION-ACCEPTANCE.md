@@ -44,15 +44,15 @@
    垂直切片；首批 VS、RATIO/RATIOV2、OEVS、PEARSONVS 已通过同文件不变量 Gate、
    非对称 JDK 25 production renderer 有序像素网格 Gate（每模式 36 格 raw float bits，覆盖
    坐标、漏格和最终覆盖），以及 Java `pre` 动态生成的不同 v9 observed/control 双 reader
-   Gate。该 production Gate 现覆盖 40 个模式：原 11 个标准模式，OEP1/OEP1V2、
+   Gate。该 production Gate 现覆盖 43 个模式：原 11 个标准模式，OEP1/OEP1V2、
    OECTRLP1/OECTRLP1V2、OEVSP1/OEVSP1V2、LOGEO、LOGCEO，以及 EXPLOGEO、
    EXPLOGCEO、OCMEVS、DIFF、RATIOP1/RATIOP1V2、RATIO0/RATIO0V2、
    RATIO0P1/RATIO0P1V2，以及 OERATIO/OERATIOV2、OERATIOP1/OERATIOP1V2、
    OERATIOMINUS/OERATIOMINUSP1，以及 LOGVS、LOGRATIO/LOGRATIOV2、
-   LOGEORATIO/LOGEORATIOV2。OME/CME 目前只作为 OCMEVS 的内部 source type，
+   LOGEORATIO/LOGEORATIOV2，以及 NORM2/NORM2CTRL/NORM2OBSVSCTRL。OME/CME 目前只作为 OCMEVS 的内部 source type，
    因为当前 Java `HeatmapRenderer.render` 没有独立 renderer 分支；其余 Java advanced
    MatrixType 仍未通过。2026-08-16 使用 JDK 25 和真实 `genome.hic` 的完整 Gate 已输出
-   `Production pixel-grid match: ... (40 modes, 36 ordered cells per mode)` 与
+   `Production pixel-grid match: ... (43 modes, 36 ordered cells per mode)` 与
    `Real-data verification passed.`。
 3. GPU Gate：真实数据拖动、缩放、调色、256 MiB CPU Block 预算、generation 取消、
    overscan 覆盖区零读取和动态 LOD已通过单机验证；显存预算、长时间运行和跨 GPU

@@ -36,8 +36,8 @@ vector 解码，以及 NONE/KR/VC/VC_SQRT 下的 Observed、Expected、O/E 和 P
 也已接入；当前可执行顺序移动、单 scaffold 翻转、debris 提取、superscaffold 拆分/
 合并、撤销/重做和 modified assembly 保存。Control 双数据源的基础 Control、
 Control/ExpectedC、Control Pearson、VS、RATIO/RATIOV2、OEVS、PearsonVS、
-OEV2/OECTRLV2/OEVSV2、LOG/LOGC/LOGEOVS 已接入，并通过 Java production renderer
-有序像素 Gate；difference、Java advanced MatrixType、旧 session
+OEV2/OECTRLV2/OEVSV2、LOG/LOGC/LOGEOVS 与 NORM2 三模式已接入，并通过 Java production renderer
+有序像素 Gate；NORM2 三模式可通过 `M` 键循环选择，NONE 会自动切换为 KR。其余未接入菜单的高级模式、旧 session
 和全部 Java UI 功能
 仍由 JDK 25 主版本提供；未实现模式不能用于科研结论。
 
