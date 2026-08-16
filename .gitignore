@@ -6,6 +6,7 @@ out/
 logs/
 .vscode
 target/
+target-*/
 *.profraw
 milestone-artifacts/
 .omo/

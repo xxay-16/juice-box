@@ -873,9 +873,11 @@ fn build_tile_streaming(
             &block,
         );
         loaded_blocks += 1;
-        let upload_rect = published_generation_texture
-            .then_some(dirty_rect.unwrap_or([0, 0, 0, 0]))
-            .filter(|rect| !dirty_rect_requires_full_upload(*rect));
+        let upload_rect = streamed_upload_rect(
+            published_generation_texture,
+            loaded_blocks == total_blocks,
+            dirty_rect,
+        );
         send_stream_result(
             sender,
             &request,
@@ -919,9 +921,11 @@ fn build_tile_streaming(
             &block,
         );
         loaded_blocks += 1;
-        let upload_rect = published_generation_texture
-            .then_some(dirty_rect.unwrap_or([0, 0, 0, 0]))
-            .filter(|rect| !dirty_rect_requires_full_upload(*rect));
+        let upload_rect = streamed_upload_rect(
+            published_generation_texture,
+            loaded_blocks == total_blocks,
+            dirty_rect,
+        );
         send_stream_result(
             sender,
             &request,
@@ -1760,6 +1764,24 @@ fn dirty_rect_requires_full_upload([_x, _y, width, height]: [u32; 4]) -> bool {
         >= u64::from(OUTPUT_SIZE)
             .saturating_mul(u64::from(OUTPUT_SIZE))
             .saturating_mul(FULL_TEXTURE_UPLOAD_AREA_NUMERATOR)
+}
+
+/// Progressive updates only need to upload the changed rectangle, but the
+/// terminal update must upload the complete accumulated raster.  A dirty
+/// rectangle describes where the *last* Block wrote; it is not a coverage
+/// proof for earlier streamed GPU copies.  Re-sending the complete final
+/// texture makes every stopped pan self-healing if a driver drops, delays, or
+/// rejects one partial upload, so newly exposed areas cannot remain blank.
+fn streamed_upload_rect(
+    published_generation_texture: bool,
+    complete: bool,
+    dirty_rect: Option<[u32; 4]>,
+) -> Option<[u32; 4]> {
+    if !published_generation_texture || complete {
+        None
+    } else {
+        dirty_rect.filter(|rect| !dirty_rect_requires_full_upload(*rect))
+    }
 }
 
 #[allow(
@@ -2775,6 +2797,25 @@ mod tests {
         assert!(dirty_rect_requires_full_upload([52, 52, 936, 936]));
         assert!(!dirty_rect_requires_full_upload([100, 100, 512, 512]));
         assert!(!dirty_rect_requires_full_upload([666, 715, 4, 4]));
+    }
+
+    #[test]
+    fn final_stream_update_reuploads_the_complete_accumulator() {
+        // A final complete raster closes the gap left by any earlier partial
+        // transfer and is what guarantees a stopped pan fills every newly
+        // exposed screen pixel.
+        assert_eq!(
+            streamed_upload_rect(true, true, Some([700, 700, 16, 16])),
+            None
+        );
+        assert_eq!(
+            streamed_upload_rect(true, false, Some([700, 700, 16, 16])),
+            Some([700, 700, 16, 16])
+        );
+        assert_eq!(
+            streamed_upload_rect(false, false, Some([700, 700, 16, 16])),
+            None
+        );
     }
 
     #[test]
