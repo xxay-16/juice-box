@@ -445,6 +445,10 @@ pub struct Viewport {
 pub struct GenomeViewport {
     pub center_bp: [f64; 2],
     pub span_bp: f64,
+    /// Independent matrix-axis bounds. Intrachromosomal and assembly views
+    /// keep these equal; interchromosomal saved states may not.
+    pub axis_lengths_bp: [f64; 2],
+    /// Longest axis, retained for whole-matrix LOD and memory-budget logic.
     pub genome_length_bp: f64,
     pub minimum_span_bp: f64,
     pub generation: u64,
@@ -458,6 +462,7 @@ impl GenomeViewport {
         Self {
             center_bp: [genome_length_bp * 0.5, genome_length_bp * 0.5],
             span_bp,
+            axis_lengths_bp: [genome_length_bp, genome_length_bp],
             genome_length_bp,
             minimum_span_bp: genome_length_bp.min(1_000_000.0),
             generation: 0,
@@ -476,13 +481,25 @@ impl GenomeViewport {
 
     pub fn normalized_rect(self) -> [f32; 4] {
         let bounds = self.bounds_bp();
-        let length = self.genome_length_bp;
         [
-            (bounds[0] / length) as f32,
-            (bounds[1] / length) as f32,
-            (self.span_bp / length) as f32,
-            (self.span_bp / length) as f32,
+            (bounds[0] / self.axis_lengths_bp[0]) as f32,
+            (bounds[1] / self.axis_lengths_bp[1]) as f32,
+            (self.span_bp / self.axis_lengths_bp[0]) as f32,
+            (self.span_bp / self.axis_lengths_bp[1]) as f32,
         ]
+    }
+
+    pub fn set_axis_lengths(&mut self, axis_lengths_bp: [u64; 2]) {
+        self.axis_lengths_bp = [
+            axis_lengths_bp[0].max(1) as f64,
+            axis_lengths_bp[1].max(1) as f64,
+        ];
+        self.genome_length_bp = self.axis_lengths_bp[0].max(self.axis_lengths_bp[1]);
+        self.span_bp = self
+            .span_bp
+            .min(self.axis_lengths_bp[0].min(self.axis_lengths_bp[1]));
+        self.minimum_span_bp = self.genome_length_bp.min(1_000_000.0);
+        self.clamp_center();
     }
 
     pub fn pan_fraction(&mut self, delta: [f64; 2]) {
@@ -504,8 +521,11 @@ impl GenomeViewport {
             self.center_bp[0] + (anchor[0] - 0.5) * old_span,
             self.center_bp[1] + (anchor[1] - 0.5) * old_span,
         ];
-        self.span_bp =
-            (old_span / factor).clamp(self.minimum_span_bp.max(1.0), self.genome_length_bp);
+        let maximum_span = self.axis_lengths_bp[0].min(self.axis_lengths_bp[1]);
+        self.span_bp = (old_span / factor).clamp(
+            self.minimum_span_bp.max(1.0).min(maximum_span),
+            maximum_span,
+        );
         self.center_bp = [
             anchor_bp[0] - (anchor[0] - 0.5) * self.span_bp,
             anchor_bp[1] - (anchor[1] - 0.5) * self.span_bp,
@@ -517,16 +537,23 @@ impl GenomeViewport {
     pub fn reset(&mut self, initial_span_fraction: f64) {
         let generation = self.generation.wrapping_add(1);
         let minimum_span_bp = self.minimum_span_bp;
+        let axis_lengths_bp = self.axis_lengths_bp;
         *self = Self::new(self.genome_length_bp as u64, initial_span_fraction);
+        self.axis_lengths_bp = axis_lengths_bp;
+        self.span_bp = self
+            .span_bp
+            .min(self.axis_lengths_bp[0].min(self.axis_lengths_bp[1]));
         self.minimum_span_bp = minimum_span_bp;
+        self.clamp_center();
         self.generation = generation;
     }
 
-    fn clamp_center(&mut self) {
+    pub fn clamp_center(&mut self) {
         let half = self.span_bp * 0.5;
-        let maximum = (self.genome_length_bp - half).max(half);
-        self.center_bp[0] = self.center_bp[0].clamp(half, maximum);
-        self.center_bp[1] = self.center_bp[1].clamp(half, maximum);
+        let maximum_x = (self.axis_lengths_bp[0] - half).max(half);
+        let maximum_y = (self.axis_lengths_bp[1] - half).max(half);
+        self.center_bp[0] = self.center_bp[0].clamp(half, maximum_x);
+        self.center_bp[1] = self.center_bp[1].clamp(half, maximum_y);
     }
 }
 
@@ -601,6 +628,20 @@ mod tests {
         assert_eq!(viewport.span_bp, 250.0);
         assert_eq!(viewport.center_bp, [875.0, 125.0]);
         assert_eq!(viewport.bounds_bp(), [750.0, 0.0, 1000.0, 250.0]);
+    }
+
+    #[test]
+    fn genome_viewport_clamps_each_interchromosomal_axis_independently() {
+        let mut viewport = GenomeViewport::new(1_000, 0.4);
+        viewport.set_axis_lengths([1_000, 600]);
+        viewport.span_bp = 200.0;
+        viewport.center_bp = [950.0, 550.0];
+        viewport.clamp_center();
+        assert_eq!(viewport.center_bp, [900.0, 500.0]);
+
+        viewport.pan_fraction([1.0, 1.0]);
+        assert_eq!(viewport.center_bp, [900.0, 500.0]);
+        assert_eq!(viewport.bounds_bp(), [800.0, 400.0, 1_000.0, 600.0]);
     }
 
     #[test]

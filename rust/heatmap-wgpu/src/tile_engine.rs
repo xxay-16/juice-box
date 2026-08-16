@@ -49,6 +49,26 @@ pub struct TileRequest {
     pub observed_normalization: Normalization,
     pub control_normalization: Normalization,
     pub matrix_type: MatrixType,
+    pub resolution_hint: Option<u32>,
+    pub observed_transpose_axes: bool,
+    pub control_transpose_axes: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatasetLaunch {
+    pub path: PathBuf,
+    pub matrix_key: String,
+    pub transpose_axes: bool,
+}
+
+impl TileRequest {
+    fn active_transpose_axes(&self) -> bool {
+        if self.matrix_type.uses_control() {
+            self.control_transpose_axes
+        } else {
+            self.observed_transpose_axes
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -75,6 +95,16 @@ impl Normalization {
             Self::Kr => Self::Vc,
             Self::Vc => Self::VcSqrt,
             Self::VcSqrt => Self::None,
+        }
+    }
+
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label.trim().to_ascii_uppercase().as_str() {
+            "NONE" => Some(Self::None),
+            "KR" => Some(Self::Kr),
+            "VC" => Some(Self::Vc),
+            "VC_SQRT" | "VC SQRT" => Some(Self::VcSqrt),
+            _ => None,
         }
     }
 }
@@ -301,6 +331,64 @@ impl MatrixType {
         }
     }
 
+    pub fn from_java_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_uppercase().as_str() {
+            "OBSERVED" => Some(Self::Observed),
+            "EXPECTED" => Some(Self::Expected),
+            "OE" => Some(Self::ObservedOverExpected),
+            "OEV2" => Some(Self::ObservedOverExpectedV2),
+            "OEP1" => Some(Self::ObservedOverExpectedP1),
+            "OEP1V2" => Some(Self::ObservedOverExpectedP1V2),
+            "OME" => Some(Self::ObservedMinusExpected),
+            "PEARSON" => Some(Self::Pearson),
+            "LOG" => Some(Self::LogObserved),
+            "LOGEO" => Some(Self::LogObservedExpected),
+            "EXPLOGEO" => Some(Self::ExpLogObservedExpected),
+            "CONTROL" => Some(Self::Control),
+            "OECTRL" => Some(Self::ControlOverExpected),
+            "OECTRLV2" => Some(Self::ControlOverExpectedV2),
+            "OECTRLP1" => Some(Self::ControlOverExpectedP1),
+            "OECTRLP1V2" => Some(Self::ControlOverExpectedP1V2),
+            "CME" => Some(Self::ControlMinusExpected),
+            "PEARSONCTRL" => Some(Self::ControlPearson),
+            "LOGC" => Some(Self::LogControl),
+            "LOGCEO" => Some(Self::LogControlExpected),
+            "EXPLOGCEO" => Some(Self::ExpLogControlExpected),
+            "VS" => Some(Self::Vs),
+            "RATIO" => Some(Self::Ratio),
+            "RATIOV2" => Some(Self::RatioV2),
+            "RATIOP1" => Some(Self::RatioP1),
+            "RATIOP1V2" => Some(Self::RatioP1V2),
+            "RATIO0" => Some(Self::RatioExpectedZero),
+            "RATIO0V2" => Some(Self::RatioExpectedZeroV2),
+            "RATIO0P1" => Some(Self::RatioExpectedZeroP1),
+            "RATIO0P1V2" => Some(Self::RatioExpectedZeroP1V2),
+            "OERATIO" => Some(Self::ObservedExpectedRatio),
+            "OERATIOV2" => Some(Self::ObservedExpectedRatioV2),
+            "OERATIOP1" => Some(Self::ObservedExpectedRatioP1),
+            "OERATIOP1V2" => Some(Self::ObservedExpectedRatioP1V2),
+            "OERATIOMINUS" => Some(Self::ObservedExpectedMinus),
+            "OERATIOMINUSP1" => Some(Self::ObservedExpectedMinusP1),
+            "DIFF" => Some(Self::Difference),
+            "OEVS" => Some(Self::ObservedOverExpectedVs),
+            "OEVSV2" => Some(Self::ObservedOverExpectedVsV2),
+            "OEVSP1" => Some(Self::ObservedOverExpectedVsP1),
+            "OEVSP1V2" => Some(Self::ObservedOverExpectedVsP1V2),
+            "OCMEVS" => Some(Self::ObservedMinusExpectedVs),
+            "LOGEOVS" => Some(Self::LogObservedExpectedVs),
+            "LOGVS" => Some(Self::LogVs),
+            "LOGRATIO" => Some(Self::LogRatio),
+            "LOGRATIOV2" => Some(Self::LogRatioV2),
+            "LOGEORATIO" => Some(Self::LogExpectedRatio),
+            "LOGEORATIOV2" => Some(Self::LogExpectedRatioV2),
+            "NORM2" => Some(Self::NormSquared),
+            "NORM2CTRL" => Some(Self::ControlNormSquared),
+            "NORM2OBSVSCTRL" => Some(Self::NormSquaredVs),
+            "PEARSONVS" => Some(Self::PearsonVs),
+            _ => None,
+        }
+    }
+
     pub fn next(self, control_available: bool) -> Self {
         if !control_available {
             return match self {
@@ -386,11 +474,27 @@ impl MatrixType {
         )
     }
 
-    fn is_pearson(self) -> bool {
+    pub(crate) fn is_pearson(self) -> bool {
         matches!(self, Self::Pearson | Self::ControlPearson | Self::PearsonVs)
     }
 
-    fn needs_expected(self) -> bool {
+    pub(crate) fn is_vs_display(self) -> bool {
+        matches!(
+            self,
+            Self::Vs
+                | Self::ObservedOverExpectedVs
+                | Self::ObservedOverExpectedVsV2
+                | Self::ObservedOverExpectedVsP1
+                | Self::ObservedOverExpectedVsP1V2
+                | Self::ObservedMinusExpectedVs
+                | Self::LogObservedExpectedVs
+                | Self::LogVs
+                | Self::NormSquaredVs
+                | Self::PearsonVs
+        )
+    }
+
+    pub(crate) fn needs_expected(self) -> bool {
         matches!(
             self,
             Self::Expected
@@ -506,23 +610,32 @@ pub struct TileEngine {
     observed_normalization: Arc<Mutex<Normalization>>,
     control_normalization: Arc<Mutex<Normalization>>,
     matrix_type: Arc<Mutex<MatrixType>>,
+    resolution_hint: Arc<Mutex<Option<u32>>>,
+    observed_transpose_axes: bool,
+    control_transpose_axes: bool,
     results: Receiver<Result<TileResult, String>>,
 }
 
 impl TileEngine {
     pub fn spawn(
-        path: PathBuf,
-        matrix_key: String,
+        observed: DatasetLaunch,
         assembly_map: Option<AssemblyCoordinateMap>,
-        control_path: Option<PathBuf>,
+        control: Option<DatasetLaunch>,
     ) -> Result<Self> {
         // Fail fast on metadata errors before starting the worker.
-        let file = HicFile::open(&path)?;
-        let matrix = file.read_matrix(&matrix_key)?;
-        if let Some(control_path) = &control_path {
-            let control_file = HicFile::open(control_path)?;
-            let control_matrix = control_file.read_matrix(&matrix_key)?;
-            validate_control_compatibility(&file, &matrix, &control_file, &control_matrix)?;
+        let file = HicFile::open(&observed.path)?;
+        let matrix = file.read_matrix(&observed.matrix_key)?;
+        if let Some(control) = &control {
+            let control_file = HicFile::open(&control.path)?;
+            let control_matrix = control_file.read_matrix(&control.matrix_key)?;
+            validate_control_compatibility(
+                &file,
+                &matrix,
+                observed.transpose_axes,
+                &control_file,
+                &control_matrix,
+                control.transpose_axes,
+            )?;
         }
 
         let request = Arc::new((Mutex::new(None), Condvar::new()));
@@ -532,20 +645,20 @@ impl TileEngine {
         let observed_normalization = Arc::new(Mutex::new(Normalization::None));
         let control_normalization = Arc::new(Mutex::new(Normalization::None));
         let matrix_type = Arc::new(Mutex::new(MatrixType::Observed));
+        let resolution_hint = Arc::new(Mutex::new(None));
+        let observed_transpose_axes = observed.transpose_axes;
+        let control_transpose_axes = control
+            .as_ref()
+            .is_some_and(|dataset| dataset.transpose_axes);
         let (sender, results) = mpsc::channel();
         let worker_request = Arc::clone(&request);
         let worker_generation = Arc::clone(&latest_generation);
         thread::Builder::new()
             .name("hic-tile-worker".to_owned())
             .spawn(move || {
-                if let Err(error) = worker_loop(
-                    path,
-                    control_path,
-                    matrix_key,
-                    worker_request,
-                    worker_generation,
-                    sender,
-                ) {
+                if let Err(error) =
+                    worker_loop(observed, control, worker_request, worker_generation, sender)
+                {
                     app_log!("tile worker stopped: {error:#}");
                 }
             })?;
@@ -557,6 +670,9 @@ impl TileEngine {
             observed_normalization,
             control_normalization,
             matrix_type,
+            resolution_hint,
+            observed_transpose_axes,
+            control_transpose_axes,
             results,
         })
     }
@@ -583,6 +699,12 @@ impl TileEngine {
                 .lock()
                 .expect("control normalization mutex poisoned"),
             matrix_type: *self.matrix_type.lock().expect("matrix type mutex poisoned"),
+            resolution_hint: *self
+                .resolution_hint
+                .lock()
+                .expect("resolution hint mutex poisoned"),
+            observed_transpose_axes: self.observed_transpose_axes,
+            control_transpose_axes: self.control_transpose_axes,
         });
         changed.notify_one();
     }
@@ -613,27 +735,41 @@ impl TileEngine {
         *self.matrix_type.lock().expect("matrix type mutex poisoned") = matrix_type;
     }
 
+    pub fn update_resolution_hint(&self, resolution: Option<u32>) {
+        *self
+            .resolution_hint
+            .lock()
+            .expect("resolution hint mutex poisoned") = resolution;
+    }
+
     pub fn try_result(&self) -> Option<Result<TileResult, String>> {
         self.results.try_recv().ok()
     }
 }
 
 fn worker_loop(
-    path: PathBuf,
-    control_path: Option<PathBuf>,
-    matrix_key: String,
+    observed: DatasetLaunch,
+    control: Option<DatasetLaunch>,
     request: Arc<(Mutex<Option<TileRequest>>, Condvar)>,
     latest_generation: Arc<AtomicU64>,
     sender: Sender<Result<TileResult, String>>,
 ) -> Result<()> {
-    let file = HicFile::open(&path)?;
-    let matrix = file.read_matrix(&matrix_key)?;
-    let control = control_path
-        .map(|path| -> Result<_> {
-            let control_file = HicFile::open(path)?;
-            let control_matrix = control_file.read_matrix(&matrix_key)?;
-            validate_control_compatibility(&file, &matrix, &control_file, &control_matrix)?;
-            Ok((control_file, control_matrix))
+    let file = HicFile::open(&observed.path)?;
+    let matrix = file.read_matrix(&observed.matrix_key)?;
+    let observed_transpose_axes = observed.transpose_axes;
+    let control = control
+        .map(|dataset| -> Result<_> {
+            let control_file = HicFile::open(dataset.path)?;
+            let control_matrix = control_file.read_matrix(&dataset.matrix_key)?;
+            validate_control_compatibility(
+                &file,
+                &matrix,
+                observed_transpose_axes,
+                &control_file,
+                &control_matrix,
+                dataset.transpose_axes,
+            )?;
+            Ok((control_file, control_matrix, dataset.transpose_axes))
         })
         .transpose()?;
     let mut observed_state = DatasetWorkerState::new();
@@ -652,8 +788,11 @@ fn worker_loop(
         };
 
         let request_assembly_map = next.assembly_map.clone();
+        let request_resolution_hint = next.resolution_hint;
+        let observed_transpose_axes = next.observed_transpose_axes;
+        let control_transpose_axes = next.control_transpose_axes;
         if next.matrix_type.is_comparison() {
-            let (control_file, control_matrix) = control
+            let (control_file, control_matrix, _) = control
                 .as_ref()
                 .context("selected comparison MatrixType requires a control .hic dataset")?;
             match build_comparison_tile(
@@ -674,6 +813,8 @@ fn worker_loop(
                         matrix.chromosome_1 == matrix.chromosome_2,
                         request_assembly_map.as_deref(),
                         completed_viewport,
+                        request_resolution_hint,
+                        observed_transpose_axes,
                         &latest_generation,
                         &request,
                         &mut observed_state.block_cache,
@@ -685,6 +826,8 @@ fn worker_loop(
                             control_matrix.chromosome_1 == control_matrix.chromosome_2,
                             request_assembly_map.as_deref(),
                             completed_viewport,
+                            request_resolution_hint,
+                            control_transpose_axes,
                             &latest_generation,
                             &request,
                             &mut control_state.block_cache,
@@ -702,7 +845,7 @@ fn worker_loop(
         }
         let use_control = next.matrix_type.uses_control();
         let (active_file, active_matrix, state) = if use_control {
-            let (control_file, control_matrix) = control
+            let (control_file, control_matrix, _) = control
                 .as_ref()
                 .context("selected MatrixType requires a control .hic dataset")?;
             (control_file, control_matrix, &mut control_state)
@@ -729,6 +872,12 @@ fn worker_loop(
                     symmetric,
                     request_assembly_map.as_deref(),
                     completed_viewport,
+                    request_resolution_hint,
+                    if use_control {
+                        control_transpose_axes
+                    } else {
+                        observed_transpose_axes
+                    },
                     &latest_generation,
                     &request,
                     &mut state.block_cache,
@@ -768,7 +917,11 @@ fn build_tile_streaming(
     } else {
         request.observed_normalization
     };
-    let zoom = if request.matrix_type.is_pearson() {
+    let zoom = if let Some(resolution) = request.resolution_hint {
+        zoom_at_resolution(matrix, resolution).with_context(|| {
+            format!("matrix has no base-pair zoom at requested session resolution {resolution}")
+        })?
+    } else if request.matrix_type.is_pearson() {
         choose_pearson_zoom(
             matrix,
             request.viewport.span_bp / f64::from(OUTPUT_SIZE),
@@ -782,7 +935,7 @@ fn build_tile_streaming(
     // Expected uses the footer vector directly; no per-bin normalization
     // vector is needed to build its dense diagonal field.  Observed and O/E
     // retain Java's normalized-contact calculation before rasterization.
-    let contact_normalization_vector = matches!(
+    let contact_normalization_vectors = matches!(
         request.matrix_type,
         MatrixType::Observed
             | MatrixType::ObservedOverExpected
@@ -804,17 +957,25 @@ fn build_tile_streaming(
             | MatrixType::ControlMinusExpected
     )
     .then(|| {
-        normalization_vector(
-            file,
-            matrix.chromosome_1,
-            normalization,
-            normalization_cache,
-            request.viewport.span_bp / f64::from(OUTPUT_SIZE),
-            matrix,
-        )
+        let resolution = zoom.bin_size;
+        Ok::<_, anyhow::Error>((
+            normalization_vector_at_resolution(
+                file,
+                matrix.chromosome_1,
+                normalization,
+                normalization_cache,
+                resolution,
+            )?,
+            normalization_vector_at_resolution(
+                file,
+                matrix.chromosome_2,
+                normalization,
+                normalization_cache,
+                resolution,
+            )?,
+        ))
     })
-    .transpose()?
-    .flatten();
+    .transpose()?;
     let expected_vector = request
         .matrix_type
         .needs_expected()
@@ -842,9 +1003,14 @@ fn build_tile_streaming(
             zoom.bin_size,
         )?
         .context("Norm^2 requires a stored normalization vector")?;
+        let (display_vector_x, display_vector_y) = if request.active_transpose_axes() {
+            (vector_y.as_slice(), vector_x.as_slice())
+        } else {
+            (vector_x.as_slice(), vector_y.as_slice())
+        };
         let values = rasterize_norm_squared(
-            vector_x.as_slice(),
-            vector_y.as_slice(),
+            display_vector_x,
+            display_vector_y,
             bin_bounds,
             zoom.bin_size,
             assembly_map,
@@ -923,8 +1089,13 @@ fn build_tile_streaming(
         )?;
         return Ok(Some(rendered_viewport));
     }
-    let visible_blocks =
-        block_numbers_for_viewport(zoom, rendered_viewport, symmetric, assembly_map);
+    let visible_blocks = block_numbers_for_viewport(
+        zoom,
+        rendered_viewport,
+        symmetric,
+        assembly_map,
+        request.active_transpose_axes(),
+    );
     // Keep the untransformed accumulator so individual Blocks can be applied
     // and published without double-log-transforming pixels shared by several
     // source Blocks.  This turns one all-or-nothing viewport texture into a
@@ -969,10 +1140,18 @@ fn build_tile_streaming(
             symmetric,
             zoom,
             assembly_map,
-            contact_normalization_vector.as_deref().map(Vec::as_slice),
+            contact_normalization_vectors
+                .as_ref()
+                .and_then(|vectors| vectors.0.as_deref())
+                .map(Vec::as_slice),
+            contact_normalization_vectors
+                .as_ref()
+                .and_then(|vectors| vectors.1.as_deref())
+                .map(Vec::as_slice),
             expected_vector.as_deref(),
             request.matrix_type,
             matrix.chromosome_1,
+            request.active_transpose_axes(),
             &block,
         );
         loaded_blocks += 1;
@@ -1017,10 +1196,18 @@ fn build_tile_streaming(
             symmetric,
             zoom,
             assembly_map,
-            contact_normalization_vector.as_deref().map(Vec::as_slice),
+            contact_normalization_vectors
+                .as_ref()
+                .and_then(|vectors| vectors.0.as_deref())
+                .map(Vec::as_slice),
+            contact_normalization_vectors
+                .as_ref()
+                .and_then(|vectors| vectors.1.as_deref())
+                .map(Vec::as_slice),
             expected_vector.as_deref(),
             request.matrix_type,
             matrix.chromosome_1,
+            request.active_transpose_axes(),
             &block,
         );
         loaded_blocks += 1;
@@ -1094,14 +1281,25 @@ fn build_comparison_tile(
     let started = Instant::now();
     let generation = request.viewport.generation;
     let target_bp_per_pixel = request.viewport.span_bp / f64::from(OUTPUT_SIZE);
-    let (observed_zoom, control_zoom) = choose_common_zoom(
-        observed_matrix,
-        control_matrix,
-        target_bp_per_pixel,
-        request.matrix_type == MatrixType::PearsonVs,
-        request.viewport.genome_length_bp,
-    )
-    .context("observed and control have no common compatible base-pair zoom")?;
+    let (observed_zoom, control_zoom) = if let Some(resolution) = request.resolution_hint {
+        (
+            zoom_at_resolution(observed_matrix, resolution).with_context(|| {
+                format!("observed matrix has no session resolution {resolution}")
+            })?,
+            zoom_at_resolution(control_matrix, resolution).with_context(|| {
+                format!("control matrix has no session resolution {resolution}")
+            })?,
+        )
+    } else {
+        choose_common_zoom(
+            observed_matrix,
+            control_matrix,
+            target_bp_per_pixel,
+            request.matrix_type == MatrixType::PearsonVs,
+            request.viewport.genome_length_bp,
+        )
+        .context("observed and control have no common compatible base-pair zoom")?
+    };
     let rendered_viewport = rendered_viewport_for(request.viewport);
     let bin_bounds = viewport_bin_bounds(rendered_viewport, observed_zoom.bin_size);
     if request.matrix_type == MatrixType::NormSquaredVs {
@@ -1137,16 +1335,26 @@ fn build_comparison_tile(
             control_zoom.bin_size,
         )?
         .context("control Norm^2 requires a stored normalization vector")?;
+        let (observed_display_x, observed_display_y) = if request.observed_transpose_axes {
+            (observed_vector_y.as_slice(), observed_vector_x.as_slice())
+        } else {
+            (observed_vector_x.as_slice(), observed_vector_y.as_slice())
+        };
+        let (control_display_x, control_display_y) = if request.control_transpose_axes {
+            (control_vector_y.as_slice(), control_vector_x.as_slice())
+        } else {
+            (control_vector_x.as_slice(), control_vector_y.as_slice())
+        };
         let observed_values = rasterize_norm_squared(
-            observed_vector_x.as_slice(),
-            observed_vector_y.as_slice(),
+            observed_display_x,
+            observed_display_y,
             bin_bounds,
             observed_zoom.bin_size,
             request.assembly_map.as_deref(),
         );
         let control_values = rasterize_norm_squared(
-            control_vector_x.as_slice(),
-            control_vector_y.as_slice(),
+            control_display_x,
+            control_display_y,
             bin_bounds,
             control_zoom.bin_size,
             request.assembly_map.as_deref(),
@@ -1197,6 +1405,7 @@ fn build_comparison_tile(
             observed_zoom,
             observed_state,
             request.observed_normalization,
+            request.observed_transpose_axes,
             &request,
             latest_generation,
         )?
@@ -1209,6 +1418,7 @@ fn build_comparison_tile(
             control_zoom,
             control_state,
             request.control_normalization,
+            request.control_transpose_axes,
             &request,
             latest_generation,
         )?
@@ -1489,6 +1699,7 @@ fn build_comparison_tile(
                 observed_state,
                 request.observed_normalization,
                 observed_source_type,
+                request.observed_transpose_axes,
                 &request,
                 bin_bounds,
                 latest_generation,
@@ -1503,6 +1714,7 @@ fn build_comparison_tile(
                 control_state,
                 request.control_normalization,
                 control_source_type,
+                request.control_transpose_axes,
                 &request,
                 bin_bounds,
                 latest_generation,
@@ -1636,13 +1848,22 @@ fn collect_dataset_contacts(
     zoom: &MatrixZoom,
     state: &mut DatasetWorkerState,
     normalization: Normalization,
+    transpose_axes: bool,
     request: &TileRequest,
     latest_generation: &AtomicU64,
 ) -> Result<Option<(ContactMap, DatasetRasterStats)>> {
     let generation = request.viewport.generation;
-    let normalization_vector = normalization_vector(
+    let normalization_vector_x = normalization_vector(
         file,
         matrix.chromosome_1,
+        normalization,
+        &mut state.normalization_cache,
+        f64::from(zoom.bin_size),
+        matrix,
+    )?;
+    let normalization_vector_y = normalization_vector(
+        file,
+        matrix.chromosome_2,
         normalization,
         &mut state.normalization_cache,
         f64::from(zoom.bin_size),
@@ -1654,20 +1875,26 @@ fn collect_dataset_contacts(
         rendered_viewport_for(request.viewport),
         symmetric,
         request.assembly_map.as_deref(),
+        transpose_axes,
     );
     let mut contacts = ContactMap::new();
     let mut missing = Vec::new();
     let mut cache_hits = 0;
     let mut collect = |records: &[ContactRecord]| {
         for record in records {
-            let Some(normalized) =
-                normalize_contact(record, normalization_vector.as_deref().map(Vec::as_slice))
-            else {
+            let Some(normalized) = normalize_contact_axes(
+                record,
+                normalization_vector_x.as_deref().map(Vec::as_slice),
+                normalization_vector_y.as_deref().map(Vec::as_slice),
+            ) else {
                 continue;
             };
-            let Some((bin_x, bin_y, counts)) =
-                map_contact(&normalized, zoom.bin_size, request.assembly_map.as_deref())
-            else {
+            let Some((bin_x, bin_y, counts)) = map_contact(
+                &normalized,
+                zoom.bin_size,
+                request.assembly_map.as_deref(),
+                transpose_axes,
+            ) else {
                 continue;
             };
             let key = if symmetric && bin_y < bin_x {
@@ -1723,14 +1950,23 @@ fn rasterize_dataset(
     state: &mut DatasetWorkerState,
     normalization: Normalization,
     source_type: MatrixType,
+    transpose_axes: bool,
     request: &TileRequest,
     bin_bounds: [i32; 4],
     latest_generation: &AtomicU64,
 ) -> Result<Option<(Vec<f32>, DatasetRasterStats)>> {
     let generation = request.viewport.generation;
-    let normalization_vector = normalization_vector(
+    let normalization_vector_x = normalization_vector(
         file,
         matrix.chromosome_1,
+        normalization,
+        &mut state.normalization_cache,
+        f64::from(zoom.bin_size),
+        matrix,
+    )?;
+    let normalization_vector_y = normalization_vector(
+        file,
+        matrix.chromosome_2,
         normalization,
         &mut state.normalization_cache,
         f64::from(zoom.bin_size),
@@ -1768,6 +2004,7 @@ fn rasterize_dataset(
         rendered_viewport_for(request.viewport),
         symmetric,
         request.assembly_map.as_deref(),
+        transpose_axes,
     );
     let mut values = vec![0.0_f32; OUTPUT_SIZE as usize * OUTPUT_SIZE as usize];
     let mut missing = Vec::new();
@@ -1784,10 +2021,12 @@ fn rasterize_dataset(
                 symmetric,
                 zoom,
                 request.assembly_map.as_deref(),
-                normalization_vector.as_deref().map(Vec::as_slice),
+                normalization_vector_x.as_deref().map(Vec::as_slice),
+                normalization_vector_y.as_deref().map(Vec::as_slice),
                 expected.as_deref(),
                 source_type,
                 matrix.chromosome_1,
+                transpose_axes,
                 &block,
             );
         } else {
@@ -1807,10 +2046,12 @@ fn rasterize_dataset(
             symmetric,
             zoom,
             request.assembly_map.as_deref(),
-            normalization_vector.as_deref().map(Vec::as_slice),
+            normalization_vector_x.as_deref().map(Vec::as_slice),
+            normalization_vector_y.as_deref().map(Vec::as_slice),
             expected.as_deref(),
             source_type,
             matrix.chromosome_1,
+            transpose_axes,
             &block,
         );
         Ok(())
@@ -2014,10 +2255,12 @@ fn accumulate_block(
     symmetric: bool,
     zoom: &MatrixZoom,
     assembly_map: Option<&AssemblyCoordinateMap>,
-    normalization_vector: Option<&[f64]>,
+    normalization_vector_x: Option<&[f64]>,
+    normalization_vector_y: Option<&[f64]>,
     expected_vector: Option<&ExpectedValueVector>,
     matrix_type: MatrixType,
     chromosome: u32,
+    transpose_axes: bool,
     records: &[ContactRecord],
 ) -> Option<[u32; 4]> {
     IntensityTile::accumulate_contact_window_dirty(
@@ -2026,8 +2269,10 @@ fn accumulate_block(
         OUTPUT_SIZE,
         symmetric,
         records.iter().filter_map(|record| {
-            let normalized = normalize_contact(record, normalization_vector)?;
-            let (bin_x, bin_y, counts) = map_contact(&normalized, zoom.bin_size, assembly_map)?;
+            let normalized =
+                normalize_contact_axes(record, normalization_vector_x, normalization_vector_y)?;
+            let (bin_x, bin_y, counts) =
+                map_contact(&normalized, zoom.bin_size, assembly_map, transpose_axes)?;
             let counts = match matrix_type {
                 MatrixType::Observed | MatrixType::Control => counts,
                 MatrixType::LogObserved | MatrixType::LogControl => counts.ln_1p(),
@@ -2552,16 +2797,25 @@ fn normalization_vector_at_resolution(
     Ok(Some(vector))
 }
 
+#[cfg(test)]
 fn normalize_contact(
     record: &ContactRecord,
     normalization: Option<&[f64]>,
 ) -> Option<ContactRecord> {
-    let Some(vector) = normalization else {
+    normalize_contact_axes(record, normalization, normalization)
+}
+
+fn normalize_contact_axes(
+    record: &ContactRecord,
+    normalization_x: Option<&[f64]>,
+    normalization_y: Option<&[f64]>,
+) -> Option<ContactRecord> {
+    let (Some(vector_x), Some(vector_y)) = (normalization_x, normalization_y) else {
         return Some(*record);
     };
     let x = usize::try_from(record.bin_x).ok()?;
     let y = usize::try_from(record.bin_y).ok()?;
-    let denominator = *vector.get(x)? * *vector.get(y)?;
+    let denominator = *vector_x.get(x)? * *vector_y.get(y)?;
     let counts = (f64::from(record.counts) / denominator) as f32;
     (!counts.is_nan()).then_some(ContactRecord {
         bin_x: record.bin_x,
@@ -2574,8 +2828,9 @@ fn map_contact(
     record: &ContactRecord,
     bin_size: u32,
     assembly_map: Option<&AssemblyCoordinateMap>,
+    transpose_axes: bool,
 ) -> Option<(i32, i32, f32)> {
-    let (bin_x, bin_y) = if let Some(map) = assembly_map {
+    let (mut bin_x, mut bin_y) = if let Some(map) = assembly_map {
         (
             map.source_bin_to_assembly_bin(record.bin_x, bin_size)?,
             map.source_bin_to_assembly_bin(record.bin_y, bin_size)?,
@@ -2583,6 +2838,9 @@ fn map_contact(
     } else {
         (record.bin_x, record.bin_y)
     };
+    if transpose_axes {
+        std::mem::swap(&mut bin_x, &mut bin_y);
+    }
     Some((bin_x, bin_y, record.counts))
 }
 
@@ -2635,13 +2893,15 @@ where
 }
 
 pub(crate) fn rendered_viewport_for(viewport: GenomeViewport) -> GenomeViewport {
-    let span_bp = (viewport.span_bp * VIEW_OVERSCAN_FACTOR).min(viewport.genome_length_bp);
+    let span_bp = (viewport.span_bp * VIEW_OVERSCAN_FACTOR)
+        .min(viewport.axis_lengths_bp[0].min(viewport.axis_lengths_bp[1]));
     let half = span_bp * 0.5;
-    let maximum = (viewport.genome_length_bp - half).max(half);
+    let maximum_x = (viewport.axis_lengths_bp[0] - half).max(half);
+    let maximum_y = (viewport.axis_lengths_bp[1] - half).max(half);
     GenomeViewport {
         center_bp: [
-            viewport.center_bp[0].clamp(half, maximum),
-            viewport.center_bp[1].clamp(half, maximum),
+            viewport.center_bp[0].clamp(half, maximum_x),
+            viewport.center_bp[1].clamp(half, maximum_y),
         ],
         span_bp,
         ..viewport
@@ -2658,22 +2918,33 @@ fn prefetch_viewport(
     symmetric: bool,
     assembly_map: Option<&AssemblyCoordinateMap>,
     viewport: GenomeViewport,
+    resolution_hint: Option<u32>,
+    transpose_axes: bool,
     latest_generation: &AtomicU64,
     request: &Arc<(Mutex<Option<TileRequest>>, Condvar)>,
     cache: &mut BlockCache,
 ) -> Result<()> {
     let generation = viewport.generation;
-    let Some(zoom) = choose_zoom(matrix, viewport.span_bp / f64::from(OUTPUT_SIZE)) else {
+    let Some(zoom) = resolution_hint
+        .and_then(|resolution| zoom_at_resolution(matrix, resolution))
+        .or_else(|| choose_zoom(matrix, viewport.span_bp / f64::from(OUTPUT_SIZE)))
+    else {
         return Ok(());
     };
     let visible_bounds = viewport_bin_bounds(viewport, zoom.bin_size);
-    let visible: HashSet<i32> = block_numbers_for_viewport(zoom, viewport, symmetric, assembly_map)
-        .into_iter()
-        .collect();
+    let visible: HashSet<i32> =
+        block_numbers_for_viewport(zoom, viewport, symmetric, assembly_map, transpose_axes)
+            .into_iter()
+            .collect();
     let prefetch_bounds = expand_bounds_by_block_rings(visible_bounds, zoom, PREFETCH_BLOCK_RINGS);
     let prefetch_viewport = viewport_from_bin_bounds(viewport, prefetch_bounds, zoom.bin_size);
-    for block_number in block_numbers_for_viewport(zoom, prefetch_viewport, symmetric, assembly_map)
-    {
+    for block_number in block_numbers_for_viewport(
+        zoom,
+        prefetch_viewport,
+        symmetric,
+        assembly_map,
+        transpose_axes,
+    ) {
         if visible.contains(&block_number) {
             continue;
         }
@@ -2706,10 +2977,14 @@ fn block_numbers_for_viewport(
     viewport: GenomeViewport,
     symmetric: bool,
     assembly_map: Option<&AssemblyCoordinateMap>,
+    transpose_axes: bool,
 ) -> Vec<i32> {
     let Some(map) = assembly_map else {
-        return zoom
-            .block_numbers_for_bounds(viewport_bin_bounds(viewport, zoom.bin_size), symmetric);
+        let mut bounds = viewport_bin_bounds(viewport, zoom.bin_size);
+        if transpose_axes {
+            bounds = [bounds[1], bounds[0], bounds[3], bounds[2]];
+        }
+        return zoom.block_numbers_for_bounds(bounds, symmetric);
     };
     let bounds = viewport.bounds_bp();
     let x_segments = map.segments_for_assembly_range(
@@ -2720,6 +2995,11 @@ fn block_numbers_for_viewport(
         bounds[1].floor().max(0.0) as u64,
         bounds[3].ceil().max(0.0) as u64,
     );
+    let (x_segments, y_segments) = if transpose_axes {
+        (y_segments, x_segments)
+    } else {
+        (x_segments, y_segments)
+    };
     let block_bins = i64::from(zoom.block_bin_count.max(1));
     let columns = i64::from(zoom.block_column_count.max(1));
     let bin_size = u64::from(zoom.bin_size.max(1));
@@ -2811,6 +3091,13 @@ fn choose_zoom(matrix: &Matrix, target_bp_per_pixel: f64) -> Option<&MatrixZoom>
         })
 }
 
+fn zoom_at_resolution(matrix: &Matrix, resolution: u32) -> Option<&MatrixZoom> {
+    matrix
+        .zooms
+        .iter()
+        .find(|zoom| zoom.unit == MatrixUnit::BasePairs && zoom.bin_size == resolution)
+}
+
 fn choose_pearson_zoom(
     matrix: &Matrix,
     target_bp_per_pixel: f64,
@@ -2841,14 +3128,16 @@ fn choose_pearson_zoom(
 
 fn viewport_bin_bounds(viewport: GenomeViewport, bin_size: u32) -> [i32; 4] {
     let bounds = viewport.bounds_bp();
-    let maximum_bin = (viewport.genome_length_bp / f64::from(bin_size)).ceil() as i32 - 1;
+    let maximum_x_bin = (viewport.axis_lengths_bp[0] / f64::from(bin_size)).ceil() as i32 - 1;
+    let maximum_y_bin = (viewport.axis_lengths_bp[1] / f64::from(bin_size)).ceil() as i32 - 1;
     [
-        (bounds[0] / f64::from(bin_size)).floor().max(0.0) as i32,
-        (bounds[1] / f64::from(bin_size)).floor().max(0.0) as i32,
-        (bounds[2] / f64::from(bin_size)).ceil().max(1.0) as i32 - 1,
-        (bounds[3] / f64::from(bin_size)).ceil().max(1.0) as i32 - 1,
+        ((bounds[0] / f64::from(bin_size)).floor().max(0.0) as i32).clamp(0, maximum_x_bin.max(0)),
+        ((bounds[1] / f64::from(bin_size)).floor().max(0.0) as i32).clamp(0, maximum_y_bin.max(0)),
+        ((bounds[2] / f64::from(bin_size)).ceil().max(1.0) as i32 - 1)
+            .clamp(0, maximum_x_bin.max(0)),
+        ((bounds[3] / f64::from(bin_size)).ceil().max(1.0) as i32 - 1)
+            .clamp(0, maximum_y_bin.max(0)),
     ]
-    .map(|value| value.clamp(0, maximum_bin.max(0)))
 }
 
 fn expand_bounds_by_block_rings(bounds: [i32; 4], zoom: &MatrixZoom, rings: i32) -> [i32; 4] {
@@ -2868,44 +3157,63 @@ fn is_stale(latest_generation: &AtomicU64, generation: u64) -> bool {
 fn validate_control_compatibility(
     observed_file: &HicFile,
     observed_matrix: &Matrix,
+    observed_transpose_axes: bool,
     control_file: &HicFile,
     control_matrix: &Matrix,
+    control_transpose_axes: bool,
 ) -> Result<()> {
-    let observed_chr_1 = observed_file
-        .header
-        .chromosomes
-        .get(observed_matrix.chromosome_1 as usize)
-        .context("observed matrix chromosome 1 is outside the header dictionary")?;
-    let observed_chr_2 = observed_file
-        .header
-        .chromosomes
-        .get(observed_matrix.chromosome_2 as usize)
-        .context("observed matrix chromosome 2 is outside the header dictionary")?;
-    let control_chr_1 = control_file
-        .header
-        .chromosomes
-        .get(control_matrix.chromosome_1 as usize)
-        .context("control matrix chromosome 1 is outside the header dictionary")?;
-    let control_chr_2 = control_file
-        .header
-        .chromosomes
-        .get(control_matrix.chromosome_2 as usize)
-        .context("control matrix chromosome 2 is outside the header dictionary")?;
-    if (observed_chr_1.name.as_str(), observed_chr_1.length)
-        != (control_chr_1.name.as_str(), control_chr_1.length)
-        || (observed_chr_2.name.as_str(), observed_chr_2.length)
-            != (control_chr_2.name.as_str(), control_chr_2.length)
+    fn display_axes<'a>(
+        file: &'a HicFile,
+        matrix: &Matrix,
+        transpose: bool,
+        label: &str,
+    ) -> Result<(&'a hic_core::Chromosome, &'a hic_core::Chromosome)> {
+        let chromosome_1 = file
+            .header
+            .chromosomes
+            .get(matrix.chromosome_1 as usize)
+            .with_context(|| {
+                format!("{label} matrix chromosome 1 is outside the header dictionary")
+            })?;
+        let chromosome_2 = file
+            .header
+            .chromosomes
+            .get(matrix.chromosome_2 as usize)
+            .with_context(|| {
+                format!("{label} matrix chromosome 2 is outside the header dictionary")
+            })?;
+        Ok(if transpose {
+            (chromosome_2, chromosome_1)
+        } else {
+            (chromosome_1, chromosome_2)
+        })
+    }
+    let (observed_x, observed_y) = display_axes(
+        observed_file,
+        observed_matrix,
+        observed_transpose_axes,
+        "observed",
+    )?;
+    let (control_x, control_y) = display_axes(
+        control_file,
+        control_matrix,
+        control_transpose_axes,
+        "control",
+    )?;
+    if (observed_x.name.as_str(), observed_x.length) != (control_x.name.as_str(), control_x.length)
+        || (observed_y.name.as_str(), observed_y.length)
+            != (control_y.name.as_str(), control_y.length)
     {
         anyhow::bail!(
             "control matrix chromosomes do not match observed: {}({}) x {}({}) versus {}({}) x {}({})",
-            observed_chr_1.name,
-            observed_chr_1.length,
-            observed_chr_2.name,
-            observed_chr_2.length,
-            control_chr_1.name,
-            control_chr_1.length,
-            control_chr_2.name,
-            control_chr_2.length
+            observed_x.name,
+            observed_x.length,
+            observed_y.name,
+            observed_y.length,
+            control_x.name,
+            control_x.length,
+            control_y.name,
+            control_y.length
         );
     }
     let observed_resolutions: HashSet<u32> = observed_matrix
@@ -3081,6 +3389,119 @@ mod tests {
     }
 
     #[test]
+    fn overscan_and_bin_bounds_respect_independent_axis_lengths() {
+        let mut viewport = GenomeViewport::new(1_000, 0.2);
+        viewport.set_axis_lengths([1_000, 600]);
+        viewport.span_bp = 200.0;
+        viewport.center_bp = [900.0, 500.0];
+        let overscan = rendered_viewport_for(viewport);
+        assert_eq!(overscan.span_bp, 300.0);
+        assert_eq!(overscan.center_bp, [850.0, 450.0]);
+        assert_eq!(viewport_bin_bounds(overscan, 100), [7, 3, 9, 5]);
+    }
+
+    #[test]
+    fn exact_resolution_hint_selects_requested_zoom_and_can_return_to_auto_lod() {
+        let zooms = [
+            MatrixZoom {
+                unit: MatrixUnit::BasePairs,
+                bin_size: 10_000,
+                sum_counts: 0.0,
+                occupied_cell_count: 0.0,
+                standard_deviation: 0.0,
+                percentile_95: 0.0,
+                block_bin_count: 10,
+                block_column_count: 10,
+                blocks: BTreeMap::new(),
+            },
+            MatrixZoom {
+                unit: MatrixUnit::BasePairs,
+                bin_size: 500_000,
+                sum_counts: 0.0,
+                occupied_cell_count: 0.0,
+                standard_deviation: 0.0,
+                percentile_95: 0.0,
+                block_bin_count: 10,
+                block_column_count: 10,
+                blocks: BTreeMap::new(),
+            },
+        ];
+        let matrix = Matrix {
+            chromosome_1: 1,
+            chromosome_2: 1,
+            zooms: zooms.to_vec(),
+        };
+        assert_eq!(
+            zoom_at_resolution(&matrix, 500_000).unwrap().bin_size,
+            500_000
+        );
+        assert_eq!(choose_zoom(&matrix, 12_000.0).unwrap().bin_size, 10_000);
+    }
+
+    #[test]
+    fn java_session_matrix_type_names_cover_every_supported_renderer() {
+        let names = [
+            "OBSERVED",
+            "EXPECTED",
+            "OE",
+            "OEV2",
+            "OEP1",
+            "OEP1V2",
+            "OME",
+            "PEARSON",
+            "LOG",
+            "LOGEO",
+            "EXPLOGEO",
+            "NORM2",
+            "CONTROL",
+            "OECTRL",
+            "OECTRLV2",
+            "OECTRLP1",
+            "OECTRLP1V2",
+            "CME",
+            "PEARSONCTRL",
+            "LOGC",
+            "LOGCEO",
+            "EXPLOGCEO",
+            "NORM2CTRL",
+            "RATIO",
+            "RATIOV2",
+            "RATIOP1",
+            "RATIOP1V2",
+            "RATIO0",
+            "RATIO0V2",
+            "RATIO0P1",
+            "RATIO0P1V2",
+            "VS",
+            "OEVS",
+            "OEVSV2",
+            "OEVSP1",
+            "OEVSP1V2",
+            "OERATIO",
+            "OERATIOV2",
+            "OERATIOP1",
+            "OERATIOP1V2",
+            "OERATIOMINUS",
+            "OERATIOMINUSP1",
+            "OCMEVS",
+            "PEARSONVS",
+            "LOGVS",
+            "LOGEOVS",
+            "LOGRATIO",
+            "LOGRATIOV2",
+            "LOGEORATIO",
+            "LOGEORATIOV2",
+            "DIFF",
+            "NORM2OBSVSCTRL",
+        ];
+        for name in names {
+            assert!(MatrixType::from_java_name(name).is_some(), "missing {name}");
+        }
+        assert!(MatrixType::from_java_name("NORM").is_none());
+        assert!(MatrixType::from_java_name("EIGENVECTOR").is_none());
+    }
+
+    #[test]
     fn broad_streamed_dirty_regions_request_a_full_texture_upload() {
         assert!(dirty_rect_requires_full_upload([0, 0, 1024, 1024]));
         assert!(dirty_rect_requires_full_upload([52, 52, 936, 936]));
@@ -3135,6 +3556,7 @@ mod tests {
         let viewport = GenomeViewport {
             center_bp: [5.0, 5.0],
             span_bp: 10.0,
+            axis_lengths_bp: [20.0, 20.0],
             genome_length_bp: 20.0,
             minimum_span_bp: 1.0,
             generation: 0,
@@ -3147,10 +3569,11 @@ mod tests {
 
         let reversed_map = editor.document().coordinate_map().unwrap();
         assert_eq!(
-            block_numbers_for_viewport(&zoom, viewport, true, Some(&reversed_map)),
+            block_numbers_for_viewport(&zoom, viewport, true, Some(&reversed_map), false),
             vec![3]
         );
-        let reversed_contact = map_contact(&contact, zoom.bin_size, Some(&reversed_map)).unwrap();
+        let reversed_contact =
+            map_contact(&contact, zoom.bin_size, Some(&reversed_map), false).unwrap();
         assert_eq!(reversed_contact, (1, 0, 3.0));
         let reversed_tile = IntensityTile::from_contact_window(
             TileKey {
@@ -3173,23 +3596,57 @@ mod tests {
         editor.move_scaffold(0, 1, 0, 0).unwrap();
         let reordered_map = editor.document().coordinate_map().unwrap();
         assert_eq!(
-            block_numbers_for_viewport(&zoom, viewport, true, Some(&reordered_map)),
+            block_numbers_for_viewport(&zoom, viewport, true, Some(&reordered_map), false),
             vec![0, 1, 2, 3]
         );
-        assert!(map_contact(&contact, zoom.bin_size, Some(&reordered_map)).is_some());
+        // The source contact used to land in the upper-left displayed
+        // quadrant.  After the move it must be rasterized at a different
+        // output location; otherwise a refresh may redraw the old texture
+        // while leaving the vacated/insertion regions visually unchanged.
+        let reordered_contact =
+            map_contact(&contact, zoom.bin_size, Some(&reordered_map), false).unwrap();
+        assert_ne!(reordered_contact, reversed_contact);
+        let reordered_tile = IntensityTile::from_contact_window(
+            TileKey {
+                dataset: 1,
+                matrix_type: 0,
+                normalization: 0,
+                assembly_version: 1,
+                resolution: 5,
+                x: 0,
+                y: 0,
+            },
+            [0, 0, 3, 3],
+            4,
+            true,
+            [reordered_contact],
+        );
+        let filled_pixels = reordered_tile
+            .values
+            .iter()
+            .enumerate()
+            .filter_map(|(index, value)| (*value > 0.0).then_some(index))
+            .collect::<Vec<_>>();
+        assert!(
+            !filled_pixels.is_empty(),
+            "a reordered assembly must rasterize replacement contacts into its new displayed region"
+        );
 
         assert!(editor.undo());
         let undo_map = editor.document().coordinate_map().unwrap();
         assert_eq!(
-            block_numbers_for_viewport(&zoom, viewport, true, Some(&undo_map)),
+            block_numbers_for_viewport(&zoom, viewport, true, Some(&undo_map), false),
             vec![3]
         );
-        assert_eq!(map_contact(&contact, 5, Some(&undo_map)), Some((1, 0, 3.0)));
+        assert_eq!(
+            map_contact(&contact, 5, Some(&undo_map), false),
+            Some((1, 0, 3.0))
+        );
 
         assert!(editor.redo());
         let redo_map = editor.document().coordinate_map().unwrap();
         assert_eq!(
-            block_numbers_for_viewport(&zoom, viewport, true, Some(&redo_map)),
+            block_numbers_for_viewport(&zoom, viewport, true, Some(&redo_map), false),
             vec![0, 1, 2, 3]
         );
     }
@@ -3236,6 +3693,67 @@ mod tests {
                 .unwrap()
                 .counts
                 .is_infinite()
+        );
+    }
+
+    #[test]
+    fn interchromosomal_normalization_uses_one_vector_per_axis() {
+        let record = ContactRecord {
+            bin_x: 1,
+            bin_y: 0,
+            counts: 60.0,
+        };
+        assert_eq!(
+            normalize_contact_axes(&record, Some(&[2.0, 3.0]), Some(&[5.0, 7.0])),
+            Some(ContactRecord {
+                bin_x: 1,
+                bin_y: 0,
+                counts: 4.0,
+            })
+        );
+    }
+
+    #[test]
+    fn transposed_session_axes_swap_source_coordinates_and_block_bounds() {
+        let record = ContactRecord {
+            bin_x: 2,
+            bin_y: 7,
+            counts: 3.0,
+        };
+        assert_eq!(map_contact(&record, 1, None, true), Some((7, 2, 3.0)));
+
+        let zoom = MatrixZoom {
+            unit: MatrixUnit::BasePairs,
+            bin_size: 1,
+            sum_counts: 0.0,
+            occupied_cell_count: 0.0,
+            standard_deviation: 0.0,
+            percentile_95: 0.0,
+            block_bin_count: 5,
+            block_column_count: 4,
+            blocks: (0..16)
+                .map(|number| {
+                    (
+                        number,
+                        IndexEntry {
+                            position: 0,
+                            size: 1,
+                        },
+                    )
+                })
+                .collect(),
+        };
+        let mut viewport = GenomeViewport::new(20, 0.25);
+        viewport.set_axis_lengths([20, 10]);
+        viewport.span_bp = 5.0;
+        viewport.center_bp = [12.5, 2.5];
+        assert_eq!(
+            block_numbers_for_viewport(&zoom, viewport, false, None, false),
+            vec![2]
+        );
+        assert_eq!(
+            block_numbers_for_viewport(&zoom, viewport, false, None, true),
+            vec![8]
         );
     }
 
@@ -3289,9 +3807,11 @@ mod tests {
             },
             None,
             None,
+            None,
             Some(&expected),
             MatrixType::ObservedOverExpected,
             1,
+            false,
             &[record],
         );
         // The mapped positions are two bins apart, so 8 / expected[2] = 2.
@@ -3353,9 +3873,11 @@ mod tests {
             },
             None,
             None,
+            None,
             Some(&expected),
             matrix_type,
             1,
+            false,
             &[ContactRecord {
                 bin_x: 0,
                 bin_y: 1,

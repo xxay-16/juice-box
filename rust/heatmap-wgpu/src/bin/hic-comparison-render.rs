@@ -19,7 +19,7 @@ macro_rules! app_log {
 #[path = "../tile_engine.rs"]
 mod tile_engine;
 
-use tile_engine::{MatrixType, TileEngine};
+use tile_engine::{DatasetLaunch, MatrixType, TileEngine};
 
 const FNV_OFFSET: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x100000001b3;
@@ -33,7 +33,19 @@ fn main() -> Result<()> {
     let file = HicFile::open(&observed)?;
     let matrix = file.read_matrix("1_1")?;
     let chromosome = &file.header.chromosomes[matrix.chromosome_1 as usize];
-    let engine = TileEngine::spawn(observed, "1_1".to_owned(), None, Some(control))?;
+    let engine = TileEngine::spawn(
+        DatasetLaunch {
+            path: observed,
+            matrix_key: "1_1".to_owned(),
+            transpose_axes: false,
+        },
+        None,
+        Some(DatasetLaunch {
+            path: control,
+            matrix_key: "1_1".to_owned(),
+            transpose_axes: false,
+        }),
+    )?;
     let mut viewport = GenomeViewport::new(chromosome.length, 1.0);
 
     let modes = [
@@ -69,8 +81,19 @@ fn main() -> Result<()> {
         let normalized_matrix = normalized_file.read_matrix("1_1")?;
         let normalized_chromosome =
             &normalized_file.header.chromosomes[normalized_matrix.chromosome_1 as usize];
-        let normalized_engine =
-            TileEngine::spawn(normalized.clone(), "1_1".to_owned(), None, Some(normalized))?;
+        let normalized_engine = TileEngine::spawn(
+            DatasetLaunch {
+                path: normalized.clone(),
+                matrix_key: "1_1".to_owned(),
+                transpose_axes: false,
+            },
+            None,
+            Some(DatasetLaunch {
+                path: normalized,
+                matrix_key: "1_1".to_owned(),
+                transpose_axes: false,
+            }),
+        )?;
         normalized_engine.update_normalization(tile_engine::Normalization::Kr);
         normalized_engine.update_control_normalization(tile_engine::Normalization::Kr);
         let mut normalized_viewport = GenomeViewport::new(normalized_chromosome.length, 1.0);

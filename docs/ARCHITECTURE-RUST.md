@@ -39,6 +39,10 @@ UI adapter
 当前代码已经包含：
 
 - Rust workspace；
+- `session-core` 独立解析 Java `SavedMaps/STATE` 21 字段 XML，支持 ISO-8859-1、
+  XML entity/CDATA、多 state `SelectedPath` 选择，并将 session 状态转换为无 UI launch config；
+  observed/control 会分别在各自 `.hic` 染色体字典中按名称解析 matrix key 和 X/Y 轴方向，
+  不要求两个文件具有相同的染色体数值索引顺序；
 - `.hic` v8/v9+ Header、Master Index、normalization 和 expected-value 读取；
 - 框架无关的 `TileKey`、`IntensityTile` 与 `Viewport`；
 - `R32Float` wgpu 纹理；
@@ -87,7 +91,10 @@ Observed/Expected/OE、动态 GPU viewport 和基础 Assembly 编辑垂直切片
 Control 双数据源现已建立独立 reader、Block/normalization/expected/Pearson cache，并接入
 Control、Control/ExpectedC 和 Control Pearson。标准 VS/Ratio/O/E/Pearson/Log 比较视图以及 DIFF、
 EXPLOGEO/EXPLOGCEO/OCMEVS、RATIOP1/RATIO0/RATIO0P1、OERATIO、LOG comparison 与 NORM2 家族已实现。JDK 25 production raw-pixel Gate 现覆盖 43 个模式，
-每模式比对 36 个有序像素。其余 Java advanced 菜单仍未实现，因此这仍不是完整迁移：旧 session、高级 Assembly 多选/phase 工具和
+每模式比对 36 个有序像素。Java legacy session 现可恢复单 observed、最多一个 control、
+染色体轴（含 X/Y 转置）、独立轴边界、BP resolution lock、origin/scale、已支持的 MatrixType、
+normalization 与颜色范围；滚轮首次缩放后解除 saved resolution lock 并回到自动 LOD。
+多 map summation、FRAG、track/annotation/loop 资源和多 state 图形选择器尚未实现。其余 Java advanced 菜单仍未实现，因此这仍不是完整迁移：高级 Assembly 多选/phase 工具和
 跨设备验收尚未完成，不能据此替换 Java 主程序。GPU 初始化失败时已自动尝试软件/CPU
 适配器，并提供 `JUICEBOX_FORCE_CPU=1` 验收开关。
 
@@ -100,6 +107,7 @@ cargo run -p hic-core --bin hic-matrix-info -- ..\data\genome.hic 1_1
 cargo run -p assembly-core --bin assembly-info -- ..\data\genome.assembly
 cargo run -p heatmap-cpu --bin hic-render-png -- ..\data\genome.hic milestone-artifacts\genome-500kb.png 1_1 500000
 cargo run -p heatmap-wgpu -- ..\data\genome.hic 1_1 ..\data\genome.assembly [control.hic]
+cargo run -p heatmap-wgpu -- tools\fixtures\legacy-session-real-data.xml [SelectedPath]
 ```
 
 最后一个命令会打开 GPU 原型。左键拖动、滚轮缩放；`+/-` 调色，`A` 恢复

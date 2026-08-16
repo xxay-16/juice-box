@@ -6,6 +6,7 @@ members = [
     "rust/heatmap-core",
     "rust/heatmap-cpu",
     "rust/heatmap-wgpu",
+    "rust/session-core",
 ]
 
 [workspace.package]
@@ -19,6 +20,7 @@ bytemuck = { version = "1.25", features = ["derive"] }
 flate2 = "1.1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 pollster = "0.4"
+quick-xml = { version = "0.38", features = ["encoding"] }
 rfd = "0.15"
 thiserror = "2.0"
 winresource = "0.1"

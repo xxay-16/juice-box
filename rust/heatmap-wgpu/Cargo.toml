@@ -14,6 +14,7 @@ heatmap-core = { path = "../heatmap-core" }
 hic-core = { path = "../hic-core" }
 pollster.workspace = true
 rfd.workspace = true
+session-core = { path = "../session-core" }
 wgpu.workspace = true
 winit.workspace = true
 

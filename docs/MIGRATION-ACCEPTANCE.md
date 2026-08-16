@@ -60,8 +60,15 @@
 4. Assembly Gate：顺序/方向映射、scaffold 翻转/移动、debris 提取、superscaffold
    拆分/合并、版本化失效、Undo/Redo 和 modified assembly 保存回读已通过真实数据；
    高级多选、phase 与全部 Java 操作对照仍待完成。
-5. UI Gate：通过上述门槛后再决定 Qt/QML、Slint、egui 或其他 UI。
-6. Release Gate：Windows 静态 CRT 单 EXE、图标、文件选择、本地日志和自动 CPU/软件
+5. Session Gate：Java `SavedMaps/STATE` 21 字段 XML 的 ISO-8859-1、entity/CDATA、
+   多 state 解析已通过；支持按 `SelectedPath` 选择 state，恢复单 observed、最多一个 control、
+   X/Y chromosome（含 observed/control 各自按名称解析 matrix key、独立轴转置和独立轴长度）、
+   BP bin size、origin/scale、已支持 MatrixType、
+   normalization 和颜色范围。真实 `genome.hic` 已验证 NORM2OBSVSCTRL + KR + 500 kb 启动，
+   且滚轮后解除 exact-resolution lock。multi-map summation、FRAG、track/annotation/loop
+   恢复和图形化 state 选择器仍待完成。
+6. UI Gate：通过上述门槛后再决定 Qt/QML、Slint、egui 或其他 UI。
+7. Release Gate：Windows 静态 CRT 单 EXE、图标、文件选择、本地日志和自动 CPU/软件
    适配器回退已通过；兼容、跨设备和长时间运行全部通过后，才考虑替换 Java 主程序。
 
 ## 本地真实数据回归

@@ -21,8 +21,11 @@ use anyhow::{Context, Result};
 use assembly_core::{AssemblyCoordinateMap, AssemblyDocument, AssemblyEditor, AssemblyPlacement};
 use bytemuck::{Pod, Zeroable};
 use heatmap_core::{GenomeViewport, IntensityTile};
-use hic_core::HicFile;
-use tile_engine::{MatrixType, Normalization, TileEngine, TileResult, rendered_viewport_for};
+use hic_core::{Chromosome, HicFile};
+use session_core::{LegacySessionState, read_legacy_session};
+use tile_engine::{
+    DatasetLaunch, MatrixType, Normalization, TileEngine, TileResult, rendered_viewport_for,
+};
 use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
@@ -34,6 +37,7 @@ use winit::{
 };
 
 const INITIAL_SPAN_FRACTION: f64 = 0.42;
+const INITIAL_WINDOW_SIDE: u32 = 900;
 const INTERACTION_REFRESH_MS: u64 = 16;
 const INTERACTION_SETTLE_MS: u64 = 48;
 const MIN_DISPLAYED_TEXTURE_SCALE: f64 = 0.45;
@@ -531,9 +535,14 @@ struct App {
     control_normalization: Normalization,
     matrix_type: MatrixType,
     control_available: bool,
+    resolution_hint: Option<u32>,
 }
 
 impl App {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "application construction keeps the immutable launch/session state explicit"
+    )]
     fn new(
         engine: TileEngine,
         viewport: GenomeViewport,
@@ -542,6 +551,11 @@ impl App {
         assembly: Option<AssemblyDocument>,
         assembly_path: Option<PathBuf>,
         control_available: bool,
+        resolution_hint: Option<u32>,
+        initial_color_range: Option<[f32; 2]>,
+        normalization: Normalization,
+        control_normalization: Normalization,
+        matrix_type: MatrixType,
     ) -> Self {
         Self {
             window: None,
@@ -551,8 +565,8 @@ impl App {
             displayed_viewport: initial.viewport,
             completed_viewport: initial.viewport,
             initial_tile: Some(initial.tile),
-            color_range: [0.0, initial.color_max],
-            auto_color_range: true,
+            color_range: initial_color_range.unwrap_or([0.0, initial.color_max]),
+            auto_color_range: initial_color_range.is_none(),
             latest_auto_color_max: initial.color_max,
             dragging: false,
             last_cursor: None,
@@ -569,10 +583,11 @@ impl App {
             debris_anchor: None,
             modifiers: winit::keyboard::ModifiersState::empty(),
             assembly_version: initial.assembly_version,
-            normalization: initial.normalization,
-            control_normalization: Normalization::None,
-            matrix_type: initial.matrix_type,
+            normalization,
+            control_normalization,
+            matrix_type,
             control_available,
+            resolution_hint,
         }
     }
 
@@ -1054,7 +1069,10 @@ impl ApplicationHandler for App {
                 .create_window(
                     WindowAttributes::default()
                         .with_title(&self.base_title)
-                        .with_inner_size(PhysicalSize::new(900, 900)),
+                        .with_inner_size(PhysicalSize::new(
+                            INITIAL_WINDOW_SIDE,
+                            INITIAL_WINDOW_SIDE,
+                        )),
                 )
                 .expect("window creation failed"),
         );
@@ -1154,6 +1172,10 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                if self.resolution_hint.take().is_some() {
+                    self.engine.update_resolution_hint(None);
+                    app_log!("session resolution lock released; automatic LOD enabled");
+                }
                 let amount = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(y),
                     MouseScrollDelta::PixelDelta(position) => position.y / 80.0,
@@ -1393,8 +1415,8 @@ fn viewport_can_serve(
     let extended_requested_bounds = [
         (requested_bounds[0] - margin).max(0.0),
         (requested_bounds[1] - margin).max(0.0),
-        (requested_bounds[2] + margin).min(requested.genome_length_bp),
-        (requested_bounds[3] + margin).min(requested.genome_length_bp),
+        (requested_bounds[2] + margin).min(requested.axis_lengths_bp[0]),
+        (requested_bounds[3] + margin).min(requested.axis_lengths_bp[1]),
     ];
     let covered = extended_requested_bounds[0] >= displayed_bounds[0]
         && extended_requested_bounds[1] >= displayed_bounds[1]
@@ -1470,9 +1492,89 @@ impl std::fmt::Display for UserCancelled {
 
 impl std::error::Error for UserCancelled {}
 
+struct LaunchConfiguration {
+    hic_path: PathBuf,
+    matrix_key: String,
+    assembly_path: Option<PathBuf>,
+    control_path: Option<PathBuf>,
+    control_matrix_key: Option<String>,
+    viewport: Option<GenomeViewport>,
+    normalization: Normalization,
+    matrix_type: MatrixType,
+    resolution_hint: Option<u32>,
+    color_range: Option<[f32; 2]>,
+    session_id: Option<String>,
+    discover_adjacent_assembly: bool,
+    observed_transpose_axes: bool,
+    control_transpose_axes: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MatrixAxisLookup {
+    matrix_key: String,
+    x_index: u32,
+    y_index: u32,
+}
+
+fn matrix_lookup_for_axis_names(
+    chromosomes: &[Chromosome],
+    x_name: &str,
+    y_name: &str,
+) -> Result<MatrixAxisLookup> {
+    let find = |name: &str| {
+        chromosomes
+            .iter()
+            .find(|chromosome| chromosome.name.eq_ignore_ascii_case(name))
+            .with_context(|| format!("chromosome {name:?} is absent from the HIC header"))
+    };
+    let x = find(x_name)?;
+    let y = find(y_name)?;
+    Ok(MatrixAxisLookup {
+        matrix_key: format!("{}_{}", x.index.min(y.index), x.index.max(y.index)),
+        x_index: x.index,
+        y_index: y.index,
+    })
+}
+
+fn transpose_for_matrix_axes(lookup: &MatrixAxisLookup, matrix: &hic_core::Matrix) -> Result<bool> {
+    let transpose_axes =
+        lookup.x_index == matrix.chromosome_2 && lookup.y_index == matrix.chromosome_1;
+    if (lookup.x_index == matrix.chromosome_1 && lookup.y_index == matrix.chromosome_2)
+        || transpose_axes
+    {
+        Ok(transpose_axes)
+    } else {
+        anyhow::bail!(
+            "requested axes {}_{} do not match matrix chromosomes {}_{}",
+            lookup.x_index,
+            lookup.y_index,
+            matrix.chromosome_1,
+            matrix.chromosome_2
+        )
+    }
+}
+
+fn dataset_launch_for_axes(
+    path: PathBuf,
+    file: &HicFile,
+    x_name: &str,
+    y_name: &str,
+) -> Result<DatasetLaunch> {
+    let lookup = matrix_lookup_for_axis_names(&file.header.chromosomes, x_name, y_name)
+        .with_context(|| format!("failed to resolve axes in {}", path.display()))?;
+    let matrix = file.read_matrix(&lookup.matrix_key)?;
+    let transpose_axes = transpose_for_matrix_axes(&lookup, &matrix)
+        .with_context(|| format!("invalid matrix axes in {}", path.display()))?;
+    Ok(DatasetLaunch {
+        path,
+        matrix_key: lookup.matrix_key,
+        transpose_axes,
+    })
+}
+
 fn run() -> Result<()> {
     let mut arguments = std::env::args_os().skip(1);
-    let hic_path = arguments
+    let first_path = arguments
         .next()
         .map(PathBuf::from)
         .or_else(|| {
@@ -1481,21 +1583,78 @@ fn run() -> Result<()> {
                 .pick_file()
         })
         .ok_or(UserCancelled)?;
-    let matrix_key = arguments
-        .next()
-        .map(|value| value.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "1_1".to_owned());
-    let assembly_path = arguments.next().map(PathBuf::from);
-    let control_path = arguments.next().map(PathBuf::from);
+    let mut launch = if first_path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+    {
+        let selected_path = arguments
+            .next()
+            .map(|value| value.to_string_lossy().into_owned());
+        launch_from_legacy_session(&first_path, selected_path.as_deref())?
+    } else {
+        LaunchConfiguration {
+            hic_path: first_path,
+            matrix_key: arguments
+                .next()
+                .map(|value| value.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "1_1".to_owned()),
+            assembly_path: arguments.next().map(PathBuf::from),
+            control_path: arguments.next().map(PathBuf::from),
+            control_matrix_key: None,
+            viewport: None,
+            normalization: Normalization::None,
+            matrix_type: MatrixType::Observed,
+            resolution_hint: None,
+            color_range: None,
+            session_id: None,
+            discover_adjacent_assembly: true,
+            observed_transpose_axes: false,
+            control_transpose_axes: false,
+        }
+    };
+    let hic_path = launch.hic_path.clone();
+    let matrix_key = launch.matrix_key.clone();
+    let assembly_path = launch.assembly_path.clone();
+    let control_path = launch.control_path.clone();
     let file = HicFile::open(&hic_path)?;
     let matrix = file.read_matrix(&matrix_key)?;
+    if let Some(control_path) = control_path.as_ref()
+        && launch.control_matrix_key.is_none()
+    {
+        let chromosome_x = file
+            .header
+            .chromosomes
+            .get(matrix.chromosome_1 as usize)
+            .context("matrix chromosome 1 is outside the header dictionary")?;
+        let chromosome_y = file
+            .header
+            .chromosomes
+            .get(matrix.chromosome_2 as usize)
+            .context("matrix chromosome 2 is outside the header dictionary")?;
+        let control_file = HicFile::open(control_path)?;
+        let control_launch = dataset_launch_for_axes(
+            control_path.clone(),
+            &control_file,
+            &chromosome_x.name,
+            &chromosome_y.name,
+        )?;
+        launch.control_matrix_key = Some(control_launch.matrix_key);
+        launch.control_transpose_axes = control_launch.transpose_axes;
+    }
     let chromosome = file
         .header
         .chromosomes
         .get(matrix.chromosome_1 as usize)
         .context("matrix chromosome is outside the header dictionary")?;
-    let resolved_assembly_path = resolve_assembly_path(&hic_path, assembly_path.as_deref());
-    let assembly = load_assembly(&resolved_assembly_path, assembly_path.is_some())?;
+    let resolved_assembly_path = assembly_path.clone().or_else(|| {
+        launch
+            .discover_adjacent_assembly
+            .then(|| hic_path.with_extension("assembly"))
+    });
+    let assembly = match resolved_assembly_path.as_deref() {
+        Some(path) => load_assembly(path, assembly_path.is_some())?,
+        None => None,
+    };
     let assembly_map = assembly
         .as_ref()
         .map(AssemblyCoordinateMap::new)
@@ -1509,19 +1668,39 @@ fn run() -> Result<()> {
             chromosome.length
         );
     }
-    let viewport = GenomeViewport::new(
-        assembly_map
-            .as_ref()
-            .map_or(chromosome.length, AssemblyCoordinateMap::total_length),
-        INITIAL_SPAN_FRACTION,
+    let genome_length = assembly_map
+        .as_ref()
+        .map_or(chromosome.length, AssemblyCoordinateMap::total_length);
+    let viewport = launch.viewport.take().map_or_else(
+        || GenomeViewport::new(genome_length, INITIAL_SPAN_FRACTION),
+        |mut viewport| {
+            if assembly_map.is_some() {
+                viewport.set_axis_lengths([genome_length, genome_length]);
+            }
+            viewport
+        },
     );
     let control_available = control_path.is_some();
     let engine = TileEngine::spawn(
-        hic_path.clone(),
-        matrix_key.clone(),
+        DatasetLaunch {
+            path: hic_path.clone(),
+            matrix_key: matrix_key.clone(),
+            transpose_axes: launch.observed_transpose_axes,
+        },
         assembly_map,
-        control_path.clone(),
+        control_path.clone().map(|path| DatasetLaunch {
+            path,
+            matrix_key: launch
+                .control_matrix_key
+                .clone()
+                .expect("control matrix key was not resolved"),
+            transpose_axes: launch.control_transpose_axes,
+        }),
     )?;
+    engine.update_normalization(launch.normalization);
+    engine.update_control_normalization(launch.normalization);
+    engine.update_matrix_type(launch.matrix_type);
+    engine.update_resolution_hint(launch.resolution_hint);
     engine.request(viewport);
     let initial = loop {
         if let Some(result) = engine.try_result() {
@@ -1554,6 +1733,15 @@ fn run() -> Result<()> {
             .map(|path| format!(" — CONTROL {}", path.display()))
             .unwrap_or_default(),
     );
+    if let Some(session_id) = &launch.session_id {
+        app_log!(
+            "legacy session restored: id={:?} mode={} normalization={} resolution={:?} tracks_restored=false",
+            session_id,
+            launch.matrix_type.label(),
+            launch.normalization.label(),
+            launch.resolution_hint
+        );
+    }
     app_log!(
         "dynamic viewport ready: span={:.0} bp resolution={} blocks={} load={:.1} ms",
         viewport.span_bp,
@@ -1568,21 +1756,186 @@ fn run() -> Result<()> {
         initial,
         base_title,
         assembly,
-        resolved_assembly_path
-            .is_file()
-            .then_some(resolved_assembly_path),
+        resolved_assembly_path.filter(|path| path.is_file()),
         control_available,
+        launch.resolution_hint,
+        launch.color_range,
+        launch.normalization,
+        launch.normalization,
+        launch.matrix_type,
     ))?;
     Ok(())
 }
 
-fn resolve_assembly_path(
-    hic_path: &std::path::Path,
-    explicit_path: Option<&std::path::Path>,
-) -> PathBuf {
-    explicit_path
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(|| hic_path.with_extension("assembly"))
+fn launch_from_legacy_session(
+    path: &std::path::Path,
+    selected_path: Option<&str>,
+) -> Result<LaunchConfiguration> {
+    let states = read_legacy_session(path)
+        .with_context(|| format!("failed to parse legacy session {}", path.display()))?;
+    let state = if let Some(selected_path) = selected_path {
+        states
+            .iter()
+            .find(|state| state.id == selected_path || state.map_path == selected_path)
+            .with_context(|| {
+                let available = states
+                    .iter()
+                    .map(|state| state.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("legacy session has no state {selected_path:?}; available: {available}")
+            })?
+    } else {
+        let state = states
+            .first()
+            .context("legacy session contains no saved state")?;
+        if states.len() > 1 {
+            app_log!(
+                "legacy session contains {} states; using first {:?}; pass SelectedPath as the second argument to choose another",
+                states.len(),
+                state.id
+            );
+        }
+        state
+    };
+    launch_from_session_state(path, state)
+}
+
+fn launch_from_session_state(
+    session_path: &std::path::Path,
+    state: &LegacySessionState,
+) -> Result<LaunchConfiguration> {
+    if !state.unit.eq_ignore_ascii_case("BP") {
+        anyhow::bail!(
+            "legacy session unit {} is not supported; Rust currently requires BP",
+            state.unit
+        );
+    }
+    if state.map_urls.len() != 1 || state.control_urls.len() > 1 {
+        anyhow::bail!(
+            "legacy session uses {} main and {} control maps; multi-map summation is not implemented",
+            state.map_urls.len(),
+            state.control_urls.len()
+        );
+    }
+    let base = session_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let resolve = |value: &str| {
+        let path = PathBuf::from(value);
+        if path.is_absolute() {
+            path
+        } else {
+            base.join(path)
+        }
+    };
+    let hic_path = resolve(&state.map_urls[0]);
+    let file = HicFile::open(&hic_path)?;
+    let observed_launch = dataset_launch_for_axes(
+        hic_path.clone(),
+        &file,
+        &state.x_chromosome,
+        &state.y_chromosome,
+    )?;
+    let lookup = matrix_lookup_for_axis_names(
+        &file.header.chromosomes,
+        &state.x_chromosome,
+        &state.y_chromosome,
+    )?;
+    let x = lookup.x_index;
+    let y = lookup.y_index;
+    let matrix_key = observed_launch.matrix_key.clone();
+    let matrix = file.read_matrix(&matrix_key)?;
+    let chromosome_x = file
+        .header
+        .chromosomes
+        .iter()
+        .find(|chromosome| chromosome.index == x)
+        .context("session X chromosome index is outside the header dictionary")?;
+    let chromosome_y = file
+        .header
+        .chromosomes
+        .iter()
+        .find(|chromosome| chromosome.index == y)
+        .context("session Y chromosome index is outside the header dictionary")?;
+    let axis_lengths = [chromosome_x.length, chromosome_y.length];
+    let genome_length = axis_lengths[0].max(axis_lengths[1]) as f64;
+    let visible_bins = f64::from(INITIAL_WINDOW_SIDE) / state.scale_factor;
+    let maximum_span = axis_lengths[0].min(axis_lengths[1]) as f64;
+    let span_bp = (visible_bins * f64::from(state.bin_size)).clamp(1.0, maximum_span.max(1.0));
+    let mut viewport = GenomeViewport::new(genome_length as u64, INITIAL_SPAN_FRACTION);
+    viewport.set_axis_lengths(axis_lengths);
+    viewport.span_bp = span_bp;
+    viewport.center_bp = [
+        (state.x_origin_bins + visible_bins * 0.5) * f64::from(state.bin_size),
+        (state.y_origin_bins + visible_bins * 0.5) * f64::from(state.bin_size),
+    ];
+    viewport.clamp_center();
+    let matrix_type = MatrixType::from_java_name(&state.display_option)
+        .with_context(|| format!("unsupported legacy MatrixType {}", state.display_option))?;
+    if x != y
+        && (matrix_type.needs_expected() || matrix_type.is_pearson() || matrix_type.is_vs_display())
+    {
+        anyhow::bail!(
+            "legacy MatrixType {} is intrachromosomal and cannot restore axes {}_{}",
+            state.display_option,
+            state.x_chromosome,
+            state.y_chromosome
+        );
+    }
+    let normalization = Normalization::from_label(&state.normalization)
+        .with_context(|| format!("unsupported legacy normalization {}", state.normalization))?;
+    let color_scale = if state.color_scale_factor.is_finite()
+        && state.color_scale_factor > 0.0
+        && state.upper_color.is_finite()
+    {
+        Some([
+            (state.lower_color / state.color_scale_factor) as f32,
+            (state.upper_color / state.color_scale_factor) as f32,
+        ])
+    } else {
+        None
+    };
+    if !matrix
+        .zooms
+        .iter()
+        .any(|zoom| zoom.bin_size == state.bin_size && zoom.unit == hic_core::MatrixUnit::BasePairs)
+    {
+        anyhow::bail!(
+            "session resolution {} is absent from matrix {}",
+            state.bin_size,
+            matrix_key
+        );
+    }
+    let control_launch = state
+        .control_urls
+        .first()
+        .map(|value| {
+            let path = resolve(value);
+            let file = HicFile::open(&path)?;
+            dataset_launch_for_axes(path, &file, &state.x_chromosome, &state.y_chromosome)
+        })
+        .transpose()?;
+    Ok(LaunchConfiguration {
+        hic_path: observed_launch.path,
+        matrix_key,
+        assembly_path: None,
+        control_path: control_launch.as_ref().map(|dataset| dataset.path.clone()),
+        control_matrix_key: control_launch
+            .as_ref()
+            .map(|dataset| dataset.matrix_key.clone()),
+        viewport: Some(viewport),
+        normalization,
+        matrix_type,
+        resolution_hint: Some(state.bin_size),
+        color_range: color_scale,
+        session_id: Some(state.id.clone()),
+        discover_adjacent_assembly: false,
+        observed_transpose_axes: observed_launch.transpose_axes,
+        control_transpose_axes: control_launch
+            .as_ref()
+            .is_some_and(|dataset| dataset.transpose_axes),
+    })
 }
 
 fn load_assembly(
@@ -1686,6 +2039,85 @@ mod tests {
             MatrixType::Observed,
             true
         ));
+    }
+
+    #[test]
+    fn reordered_control_dictionary_resolves_its_own_key_and_transpose() {
+        let observed = vec![
+            Chromosome {
+                index: 1,
+                name: "A".to_owned(),
+                length: 100,
+            },
+            Chromosome {
+                index: 2,
+                name: "B".to_owned(),
+                length: 200,
+            },
+        ];
+        let control = vec![
+            Chromosome {
+                index: 1,
+                name: "B".to_owned(),
+                length: 200,
+            },
+            Chromosome {
+                index: 2,
+                name: "A".to_owned(),
+                length: 100,
+            },
+        ];
+        let observed_lookup = matrix_lookup_for_axis_names(&observed, "A", "B").unwrap();
+        let control_lookup = matrix_lookup_for_axis_names(&control, "A", "B").unwrap();
+        assert_eq!(observed_lookup.matrix_key, "1_2");
+        assert_eq!(control_lookup.matrix_key, "1_2");
+        let matrix = hic_core::Matrix {
+            chromosome_1: 1,
+            chromosome_2: 2,
+            zooms: Vec::new(),
+        };
+        assert!(!transpose_for_matrix_axes(&observed_lookup, &matrix).unwrap());
+        assert!(transpose_for_matrix_axes(&control_lookup, &matrix).unwrap());
+    }
+
+    #[test]
+    fn independently_numbered_control_dictionary_gets_a_distinct_matrix_key() {
+        let observed = vec![
+            Chromosome {
+                index: 1,
+                name: "A".to_owned(),
+                length: 100,
+            },
+            Chromosome {
+                index: 2,
+                name: "B".to_owned(),
+                length: 200,
+            },
+        ];
+        let control = vec![
+            Chromosome {
+                index: 3,
+                name: "A".to_owned(),
+                length: 100,
+            },
+            Chromosome {
+                index: 7,
+                name: "B".to_owned(),
+                length: 200,
+            },
+        ];
+        assert_eq!(
+            matrix_lookup_for_axis_names(&observed, "A", "B")
+                .unwrap()
+                .matrix_key,
+            "1_2"
+        );
+        assert_eq!(
+            matrix_lookup_for_axis_names(&control, "A", "B")
+                .unwrap()
+                .matrix_key,
+            "3_7"
+        );
     }
 
     #[test]
@@ -1927,8 +2359,20 @@ mod tests {
         let file = HicFile::open(&path).expect("failed to open real .hic");
         let matrix = file.read_matrix("1_1").expect("missing matrix 1_1");
         let chromosome = &file.header.chromosomes[matrix.chromosome_1 as usize];
-        let engine = TileEngine::spawn(path.clone(), "1_1".to_owned(), None, Some(path.clone()))
-            .expect("same-file control should be compatible");
+        let engine = TileEngine::spawn(
+            DatasetLaunch {
+                path: path.clone(),
+                matrix_key: "1_1".to_owned(),
+                transpose_axes: false,
+            },
+            None,
+            Some(DatasetLaunch {
+                path: path.clone(),
+                matrix_key: "1_1".to_owned(),
+                transpose_axes: false,
+            }),
+        )
+        .expect("same-file control should be compatible");
         let mut viewport = GenomeViewport::new(chromosome.length, INITIAL_SPAN_FRACTION);
 
         let (observed, observed_bits) =
@@ -2026,8 +2470,20 @@ mod tests {
             .read_matrix("1_1")
             .expect("missing observed matrix 1_1");
         let chromosome = &file.header.chromosomes[matrix.chromosome_1 as usize];
-        let engine = TileEngine::spawn(observed_path, "1_1".to_owned(), None, Some(control_path))
-            .expect("distinct fixture datasets should be compatible");
+        let engine = TileEngine::spawn(
+            DatasetLaunch {
+                path: observed_path,
+                matrix_key: "1_1".to_owned(),
+                transpose_axes: false,
+            },
+            None,
+            Some(DatasetLaunch {
+                path: control_path,
+                matrix_key: "1_1".to_owned(),
+                transpose_axes: false,
+            }),
+        )
+        .expect("distinct fixture datasets should be compatible");
         let mut viewport = GenomeViewport::new(chromosome.length, INITIAL_SPAN_FRACTION);
 
         let (_, observed_bits) =

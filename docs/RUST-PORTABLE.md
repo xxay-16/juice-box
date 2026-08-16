@@ -3,6 +3,18 @@
 双击 `JuiceboxRust.exe`，选择本地 `.hic` 文件即可启动。不需要安装，也不需要 JDK。
 如果 `.hic` 旁边存在同名 `.assembly`，程序会自动加载；也可以按 `Ctrl+O` 打开其他
 Assembly。
+也可以从命令行直接打开 Java 保存的 session：
+
+```text
+JuiceboxRust.exe <JuiceboxStatesForExport.xml> [SelectedPath]
+```
+
+当前会恢复单 observed、最多一个 control、染色体、BP resolution、origin/scale、已支持
+MatrixType、normalization 和颜色范围。XML 包含多个 state 时可用第二参数选择；省略时加载
+第一个并写入日志。Session 模式不会自动套用 `.hic` 旁边的同名 Assembly，因为 Java XML
+没有保存 Assembly 路径。observed/control 的 matrix key 会在各自 `.hic` 中按染色体名称
+独立解析，不要求两个文件使用相同的染色体索引顺序。multi-map、FRAG、
+tracks/annotations/loops 尚未恢复。
 
 ## 操作
 
@@ -37,7 +49,8 @@ vector 解码，以及 NONE/KR/VC/VC_SQRT 下的 Observed、Expected、O/E 和 P
 合并、撤销/重做和 modified assembly 保存。Control 双数据源的基础 Control、
 Control/ExpectedC、Control Pearson、VS、RATIO/RATIOV2、OEVS、PearsonVS、
 OEV2/OECTRLV2/OEVSV2、LOG/LOGC/LOGEOVS 与 NORM2 三模式已接入，并通过 Java production renderer
-有序像素 Gate；NORM2 三模式可通过 `M` 键循环选择，NONE 会自动切换为 KR。其余未接入菜单的高级模式、旧 session
+有序像素 Gate；NORM2 三模式可通过 `M` 键循环选择，NONE 会自动切换为 KR。Java legacy
+session 的基础视图状态已可恢复；其余未接入菜单的高级模式、session tracks/annotations
 和全部 Java UI 功能
 仍由 JDK 25 主版本提供；未实现模式不能用于科研结论。
 
