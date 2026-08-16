@@ -58,7 +58,9 @@ public final class HiCComparisonRenderFingerprint {
                 MatrixType.RATIO0P1, MatrixType.RATIO0P1V2,
                 MatrixType.OERATIO, MatrixType.OERATIOV2,
                 MatrixType.OERATIOP1, MatrixType.OERATIOP1V2,
-                MatrixType.OERATIOMINUS, MatrixType.OERATIOMINUSP1}) {
+                MatrixType.OERATIOMINUS, MatrixType.OERATIOMINUSP1,
+                MatrixType.LOGVS, MatrixType.LOGRATIO, MatrixType.LOGRATIOV2,
+                MatrixType.LOGEORATIO, MatrixType.LOGEORATIOV2}) {
             BufferedImage image = new BufferedImage(6, 6, BufferedImage.TYPE_INT_ARGB);
             Graphics2D graphics = image.createGraphics();
             RecordingRenderer renderer = new RecordingRenderer(graphics, new ColorScaleHandler(), 6, 6);

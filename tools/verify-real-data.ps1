@@ -44,7 +44,8 @@ $comparisonModes = @(
     "LOG", "LOGC", "LOGEO", "LOGCEO", "LOGEOVS",
     "EXPLOGEO", "EXPLOGCEO", "OCMEVS", "DIFF",
     "RATIOP1", "RATIOP1V2", "RATIO0", "RATIO0V2", "RATIO0P1", "RATIO0P1V2",
-    "OERATIO", "OERATIOV2", "OERATIOP1", "OERATIOP1V2", "OERATIOMINUS", "OERATIOMINUSP1"
+    "OERATIO", "OERATIOV2", "OERATIOP1", "OERATIOP1V2", "OERATIOMINUS", "OERATIOMINUSP1",
+    "LOGVS", "LOGRATIO", "LOGRATIOV2", "LOGEORATIO", "LOGEORATIOV2"
 )
 $comparisonHicRoot = Join-Path $root "__artifacts_temp/comparison-hic"
 New-Item -ItemType Directory -Force $comparisonHicRoot | Out-Null

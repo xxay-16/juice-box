@@ -883,7 +883,7 @@ public class HeatmapRenderer {
                         float score = (float) Math.log(averageAcrossMapAndControl * (rec.getCounts() / averageCount) + 1);
                         if (Float.isNaN(score) || Float.isInfinite(score)) continue;
 
-                        setColor(cs.getColor(score));
+                        setScore(score, cs);
 
                         aboveDiagonalPainting(originX, originY, width, height, rec);
                     }
@@ -899,7 +899,7 @@ public class HeatmapRenderer {
                         float score = (float) Math.log(averageAcrossMapAndControl * (rec.getCounts() / ctrlAverageCount) + 1);
                         if (Float.isNaN(score) || Float.isInfinite(score)) continue;
 
-                        setColor(cs.getColor(score));
+                        setScore(score, cs);
 
                         belowDiagonalPainting(originX, originY, width, height, rec);
                     }

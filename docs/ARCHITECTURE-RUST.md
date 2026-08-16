@@ -70,6 +70,9 @@ UI adapter
 - advanced paired O/E comparison 第四族：OERATIO/OERATIOV2、OERATIOP1/OERATIOP1V2、
   OERATIOMINUS/OERATIOMINUSP1；同染色体按 contact 对角距离读取两套 expected，跨染色体
   按 Java 行为回退到各自 zoom average（非正值使用 1），ratio 与 signed difference 共用配对栅格器；
+- advanced log comparison 第五族：LOGVS 在上下三角独立使用两套稀疏 contact；
+  LOGRATIO/LOGRATIOV2 与 LOGEORATIO/LOGEORATIOV2 仅使用 paired contacts，并分别复现
+  Java float log-operands 与 double Math.log 中间精度；V2 继续只切换 log-ratio 色阶；
 - visible Block 并行解压后逐块栅格化和上传，进入视口的新区域无需等待全部 Block；
 - 真实 v8 数据的 raw/normalized Block、normalization vector、expected vector 和 O/E
   逐 record Java/Rust 指纹 Gate。
@@ -78,7 +81,7 @@ UI adapter
 Observed/Expected/OE、动态 GPU viewport 和基础 Assembly 编辑垂直切片也已跑通。
 Control 双数据源现已建立独立 reader、Block/normalization/expected/Pearson cache，并接入
 Control、Control/ExpectedC 和 Control Pearson。标准 VS/Ratio/O/E/Pearson/Log 比较视图以及 DIFF、
-EXPLOGEO/EXPLOGCEO/OCMEVS、RATIOP1/RATIO0/RATIO0P1 及 OERATIO 家族已实现。JDK 25 production raw-pixel Gate 现覆盖 35 个模式，
+EXPLOGEO/EXPLOGCEO/OCMEVS、RATIOP1/RATIO0/RATIO0P1、OERATIO 与 LOG comparison 家族已实现。JDK 25 production raw-pixel Gate 现覆盖 40 个模式，
 每模式比对 36 个有序像素。其余 Java advanced 菜单仍未实现，因此这仍不是完整迁移：旧 session、高级 Assembly 多选/phase 工具和
 跨设备验收尚未完成，不能据此替换 Java 主程序。GPU 初始化失败时已自动尝试软件/CPU
 适配器，并提供 `JUICEBOX_FORCE_CPU=1` 验收开关。

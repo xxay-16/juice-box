@@ -36,6 +36,21 @@ pub fn scale_for_vs(values: &[f32], own_average: f32, other_average: f32) -> Vec
         .collect()
 }
 
+/// Matches HeatmapRenderer.renderSimpleLogVSMap.  Java evaluates the scale
+/// expression in float, widens that rounded value for Math.log, then casts the
+/// result back to float.
+pub fn scale_for_log_vs(values: &[f32], own_average: f32, other_average: f32) -> Vec<f32> {
+    let shared_average = (own_average + other_average) / 2.0;
+    values
+        .iter()
+        .map(|&value| {
+            let argument = shared_average * (value / own_average) + 1.0;
+            let score = f64::from(argument).ln() as f32;
+            if score.is_finite() { score } else { 0.0 }
+        })
+        .collect()
+}
+
 pub fn observed_over_expected_score(count: f32, expected: f32, pseudo_count: f32) -> f32 {
     let score = (count + pseudo_count) / (expected + pseudo_count);
     if score.is_finite() { score } else { 0.0 }
@@ -169,6 +184,141 @@ pub fn rasterize_difference_contacts(
         add(bin_x, bin_y, score);
         if symmetric && bin_x != bin_y {
             add(bin_y, bin_x, score);
+        }
+    }
+    for (value, count) in values.iter_mut().zip(samples) {
+        if count != 0 {
+            *value /= count as f32;
+        }
+    }
+    values
+}
+
+pub fn rasterize_log_ratio_contacts(
+    observed: &ContactMap,
+    control: &ContactMap,
+    bin_bounds: [i32; 4],
+    output_size: u32,
+    symmetric: bool,
+    observed_average: f32,
+    control_average: f32,
+) -> Vec<f32> {
+    rasterize_paired_contacts(
+        observed,
+        control,
+        bin_bounds,
+        output_size,
+        symmetric,
+        |observed_count, control_count, _, _| {
+            let observed_argument = observed_count / observed_average + 1.0;
+            let control_argument = control_count / control_average + 1.0;
+            let numerator = f64::from(observed_argument).ln() as f32;
+            let denominator = f64::from(control_argument).ln() as f32;
+            Some(numerator / denominator)
+        },
+        |_, _| Some((0.0, 0.0)),
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Java log expected ratio requires paired contacts, two expected sources, and viewport raster inputs"
+)]
+pub fn rasterize_log_expected_ratio_contacts<F, G>(
+    observed: &ContactMap,
+    control: &ContactMap,
+    bin_bounds: [i32; 4],
+    output_size: u32,
+    symmetric: bool,
+    observed_expected: F,
+    control_expected: G,
+) -> Vec<f32>
+where
+    F: Fn(i32, i32) -> Option<f32>,
+    G: Fn(i32, i32) -> Option<f32>,
+{
+    rasterize_paired_contacts(
+        observed,
+        control,
+        bin_bounds,
+        output_size,
+        symmetric,
+        |observed_count, control_count, observed_expected, control_expected| {
+            let observed_count_log = f64::from(observed_count + 1.0).ln();
+            let observed_expected_log = f64::from(observed_expected + 1.0).ln();
+            let control_count_log = f64::from(control_count + 1.0).ln();
+            let control_expected_log = f64::from(control_expected + 1.0).ln();
+            Some(
+                ((observed_count_log / observed_expected_log)
+                    / (control_count_log / control_expected_log)) as f32,
+            )
+        },
+        |bin_x, bin_y| {
+            Some((
+                observed_expected(bin_x, bin_y)?,
+                control_expected(bin_x, bin_y)?,
+            ))
+        },
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "paired rasterization keeps the Java contact join, score transform, and viewport mapping explicit"
+)]
+fn rasterize_paired_contacts<S, E>(
+    observed: &ContactMap,
+    control: &ContactMap,
+    bin_bounds: [i32; 4],
+    output_size: u32,
+    symmetric: bool,
+    score: S,
+    expected: E,
+) -> Vec<f32>
+where
+    S: Fn(f32, f32, f32, f32) -> Option<f32>,
+    E: Fn(i32, i32) -> Option<(f32, f32)>,
+{
+    assert!(output_size > 0);
+    let size = output_size as usize;
+    let width_bins = (bin_bounds[2] - bin_bounds[0] + 1).max(1) as u64;
+    let height_bins = (bin_bounds[3] - bin_bounds[1] + 1).max(1) as u64;
+    let mut values = vec![0.0; size * size];
+    let mut samples = vec![0_u32; size * size];
+    let mut add = |bin_x: i32, bin_y: i32, score: f32| {
+        if bin_x < bin_bounds[0]
+            || bin_x > bin_bounds[2]
+            || bin_y < bin_bounds[1]
+            || bin_y > bin_bounds[3]
+            || !score.is_finite()
+        {
+            return;
+        }
+        let x = (((bin_x - bin_bounds[0]) as u64 * u64::from(output_size)) / width_bins)
+            .min(u64::from(output_size) - 1) as usize;
+        let y = (((bin_y - bin_bounds[1]) as u64 * u64::from(output_size)) / height_bins)
+            .min(u64::from(output_size) - 1) as usize;
+        values[y * size + x] += score;
+        samples[y * size + x] += 1;
+    };
+    for (&(bin_x, bin_y), &observed_count) in observed {
+        let Some(&control_count) = control.get(&(bin_x, bin_y)) else {
+            continue;
+        };
+        let Some((observed_expected, control_expected)) = expected(bin_x, bin_y) else {
+            continue;
+        };
+        let Some(value) = score(
+            observed_count,
+            control_count,
+            observed_expected,
+            control_expected,
+        ) else {
+            continue;
+        };
+        add(bin_x, bin_y, value);
+        if symmetric && bin_x != bin_y {
+            add(bin_y, bin_x, value);
         }
     }
     for (value, count) in values.iter_mut().zip(samples) {
@@ -403,5 +553,47 @@ mod tests {
             ExpectedComparison::Difference,
         );
         assert_eq!(values[0].to_bits(), 2.5_f32.to_bits());
+    }
+
+    #[test]
+    fn log_vs_preserves_float_expression_before_java_double_log() {
+        let values = scale_for_log_vs(&[3.0], 2.0, 6.0);
+        let argument = 4.0_f32 * (3.0_f32 / 2.0_f32) + 1.0_f32;
+        assert_eq!(
+            values[0].to_bits(),
+            (f64::from(argument).ln() as f32).to_bits()
+        );
+    }
+
+    #[test]
+    fn log_ratio_uses_only_paired_contacts_and_float_log_operands() {
+        let observed = ContactMap::from([((0, 0), 3.0), ((0, 1), 7.0)]);
+        let control = ContactMap::from([((0, 0), 8.0)]);
+        let values =
+            rasterize_log_ratio_contacts(&observed, &control, [0, 0, 1, 1], 2, true, 2.0, 4.0);
+        let numerator = f64::from(3.0_f32 / 2.0_f32 + 1.0).ln() as f32;
+        let denominator = f64::from(8.0_f32 / 4.0_f32 + 1.0).ln() as f32;
+        assert_eq!(values[0].to_bits(), (numerator / denominator).to_bits());
+        assert_eq!(values[1], 0.0);
+    }
+
+    #[test]
+    fn log_expected_ratio_uses_distance_specific_expected_and_double_intermediates() {
+        let observed = ContactMap::from([((0, 1), 8.0)]);
+        let control = ContactMap::from([((0, 1), 3.0)]);
+        let values = rasterize_log_expected_ratio_contacts(
+            &observed,
+            &control,
+            [0, 0, 1, 1],
+            2,
+            true,
+            |x, y| Some(if x == y { 9.0 } else { 2.0 }),
+            |x, y| Some(if x == y { 7.0 } else { 5.0 }),
+        );
+        let expected = ((f64::from(8.0_f32 + 1.0).ln() / f64::from(2.0_f32 + 1.0).ln())
+            / (f64::from(3.0_f32 + 1.0).ln() / f64::from(5.0_f32 + 1.0).ln()))
+            as f32;
+        assert_eq!(values[1].to_bits(), expected.to_bits());
+        assert_eq!(values[2].to_bits(), expected.to_bits());
     }
 }

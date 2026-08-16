@@ -19,7 +19,8 @@ use heatmap_core::{
 use heatmap_wgpu::comparison::{
     ContactMap, ExpectedComparison, combine_triangles, observed_over_expected_score,
     rasterize_difference_contacts, rasterize_expected_comparison_contacts,
-    rasterize_ratio_contacts, rasterize_ratio_with_baselines_contacts, scale_for_vs,
+    rasterize_log_expected_ratio_contacts, rasterize_log_ratio_contacts, rasterize_ratio_contacts,
+    rasterize_ratio_with_baselines_contacts, scale_for_log_vs, scale_for_vs,
 };
 use hic_core::{
     ContactRecord, ExpectedValueKey, ExpectedValueVector, HicFile, Matrix, MatrixUnit, MatrixZoom,
@@ -147,6 +148,11 @@ pub enum MatrixType {
     ObservedOverExpectedVsP1V2,
     ObservedMinusExpectedVs,
     LogObservedExpectedVs,
+    LogVs,
+    LogRatio,
+    LogRatioV2,
+    LogExpectedRatio,
+    LogExpectedRatioV2,
     PearsonVs,
 }
 
@@ -199,6 +205,17 @@ impl MatrixType {
         Self::ObservedExpectedRatioP1V2,
         Self::ObservedExpectedMinus,
         Self::ObservedExpectedMinusP1,
+    ];
+    #[allow(
+        dead_code,
+        reason = "advanced modes are exercised by the production parity binary before the UI menu is complete"
+    )]
+    pub const LOG_COMPARISON_MODES: [Self; 5] = [
+        Self::LogVs,
+        Self::LogRatio,
+        Self::LogRatioV2,
+        Self::LogExpectedRatio,
+        Self::LogExpectedRatioV2,
     ];
 
     pub fn label(self) -> &'static str {
@@ -256,6 +273,15 @@ impl MatrixType {
             Self::LogObservedExpectedVs => {
                 "Log[Observed+1]/Log[Expected+1] vs Log[Control+1]/Log[ExpectedC+1]"
             }
+            Self::LogVs => "Log[Observed/AvgO+1] vs Log[Control/AvgC+1]",
+            Self::LogRatio => "Log[Observed/AvgO+1]/Log[Control/AvgC+1]",
+            Self::LogRatioV2 => "Log[Log[Observed/AvgO+1]/Log[Control/AvgC+1]]",
+            Self::LogExpectedRatio => {
+                "(Log[Observed+1]/Log[Expected+1])/(Log[Control+1]/Log[ExpectedC+1])"
+            }
+            Self::LogExpectedRatioV2 => {
+                "Log[(Log[Observed+1]/Log[Expected+1])/(Log[Control+1]/Log[ExpectedC+1])]"
+            }
             Self::PearsonVs => "Observed Pearson vs Control Pearson",
         }
     }
@@ -309,7 +335,12 @@ impl MatrixType {
             | Self::ObservedExpectedRatioP1V2
             | Self::ObservedExpectedMinus
             | Self::ObservedExpectedMinusP1
-            | Self::ObservedMinusExpectedVs => Self::Observed,
+            | Self::ObservedMinusExpectedVs
+            | Self::LogVs
+            | Self::LogRatio
+            | Self::LogRatioV2
+            | Self::LogExpectedRatio
+            | Self::LogExpectedRatioV2 => Self::Observed,
             Self::ObservedOverExpectedP1
             | Self::ObservedOverExpectedP1V2
             | Self::ControlOverExpectedP1
@@ -387,6 +418,11 @@ impl MatrixType {
                 | Self::ObservedOverExpectedVsP1V2
                 | Self::ObservedMinusExpectedVs
                 | Self::LogObservedExpectedVs
+                | Self::LogVs
+                | Self::LogRatio
+                | Self::LogRatioV2
+                | Self::LogExpectedRatio
+                | Self::LogExpectedRatioV2
                 | Self::PearsonVs
         )
     }
@@ -400,6 +436,8 @@ impl MatrixType {
                 | Self::RatioExpectedZeroP1V2
                 | Self::ObservedExpectedRatioV2
                 | Self::ObservedExpectedRatioP1V2
+                | Self::LogRatioV2
+                | Self::LogExpectedRatioV2
                 | Self::ObservedExpectedMinus
                 | Self::ObservedExpectedMinusP1
                 | Self::ObservedOverExpectedV2
@@ -1017,6 +1055,10 @@ fn build_comparison_tile(
             | MatrixType::ObservedExpectedRatioP1V2
             | MatrixType::ObservedExpectedMinus
             | MatrixType::ObservedExpectedMinusP1
+            | MatrixType::LogRatio
+            | MatrixType::LogRatioV2
+            | MatrixType::LogExpectedRatio
+            | MatrixType::LogExpectedRatioV2
             | MatrixType::Difference
     ) {
         let Some((observed_contacts, observed_stats)) = collect_dataset_contacts(
@@ -1053,6 +1095,8 @@ fn build_comparison_tile(
                 | MatrixType::ObservedExpectedRatioP1V2
                 | MatrixType::ObservedExpectedMinus
                 | MatrixType::ObservedExpectedMinusP1
+                | MatrixType::LogExpectedRatio
+                | MatrixType::LogExpectedRatioV2
         );
         let values = if expected_comparison {
             let observed_expected = expected_vector(
@@ -1088,40 +1132,57 @@ fn build_comparison_tile(
             };
             let observed_fallback = observed_average.max(1.0);
             let control_fallback = control_average.max(1.0);
-            rasterize_expected_comparison_contacts(
-                &observed_contacts,
-                &control_contacts,
-                bin_bounds,
-                OUTPUT_SIZE,
-                symmetric,
-                |bin_x, bin_y| {
-                    if symmetric {
-                        observed_expected
-                            .value_for(
-                                observed_matrix.chromosome_1,
-                                u64::from((bin_x - bin_y).unsigned_abs()),
-                            )
-                            .map(|value| value as f32)
-                    } else {
-                        Some(observed_fallback)
-                    }
-                },
-                |bin_x, bin_y| {
-                    if symmetric {
-                        control_expected
-                            .value_for(
-                                control_matrix.chromosome_1,
-                                u64::from((bin_x - bin_y).unsigned_abs()),
-                            )
-                            .map(|value| value as f32)
-                    } else {
-                        Some(control_fallback)
-                    }
-                },
-                pseudo_count,
-                pseudo_count,
-                operation,
-            )
+            let observed_expected_at = |bin_x: i32, bin_y: i32| {
+                if symmetric {
+                    observed_expected
+                        .value_for(
+                            observed_matrix.chromosome_1,
+                            u64::from((bin_x - bin_y).unsigned_abs()),
+                        )
+                        .map(|value| value as f32)
+                } else {
+                    Some(observed_fallback)
+                }
+            };
+            let control_expected_at = |bin_x: i32, bin_y: i32| {
+                if symmetric {
+                    control_expected
+                        .value_for(
+                            control_matrix.chromosome_1,
+                            u64::from((bin_x - bin_y).unsigned_abs()),
+                        )
+                        .map(|value| value as f32)
+                } else {
+                    Some(control_fallback)
+                }
+            };
+            if matches!(
+                request.matrix_type,
+                MatrixType::LogExpectedRatio | MatrixType::LogExpectedRatioV2
+            ) {
+                rasterize_log_expected_ratio_contacts(
+                    &observed_contacts,
+                    &control_contacts,
+                    bin_bounds,
+                    OUTPUT_SIZE,
+                    symmetric,
+                    observed_expected_at,
+                    control_expected_at,
+                )
+            } else {
+                rasterize_expected_comparison_contacts(
+                    &observed_contacts,
+                    &control_contacts,
+                    bin_bounds,
+                    OUTPUT_SIZE,
+                    symmetric,
+                    observed_expected_at,
+                    control_expected_at,
+                    pseudo_count,
+                    pseudo_count,
+                    operation,
+                )
+            }
         } else if request.matrix_type == MatrixType::Difference {
             rasterize_difference_contacts(
                 &observed_contacts,
@@ -1134,6 +1195,19 @@ fn build_comparison_tile(
             )
         } else if matches!(request.matrix_type, MatrixType::Ratio | MatrixType::RatioV2) {
             rasterize_ratio_contacts(
+                &observed_contacts,
+                &control_contacts,
+                bin_bounds,
+                OUTPUT_SIZE,
+                observed_matrix.chromosome_1 == observed_matrix.chromosome_2,
+                observed_average,
+                control_average,
+            )
+        } else if matches!(
+            request.matrix_type,
+            MatrixType::LogRatio | MatrixType::LogRatioV2
+        ) {
+            rasterize_log_ratio_contacts(
                 &observed_contacts,
                 &control_contacts,
                 bin_bounds,
@@ -1330,6 +1404,18 @@ fn build_comparison_tile(
                 zoom_average_count(observed_file, observed_matrix, observed_zoom),
             ),
         ),
+        MatrixType::LogVs => combine_triangles(
+            &scale_for_log_vs(
+                &observed_values,
+                zoom_average_count(observed_file, observed_matrix, observed_zoom),
+                zoom_average_count(control_file, control_matrix, control_zoom),
+            ),
+            &scale_for_log_vs(
+                &control_values,
+                zoom_average_count(control_file, control_matrix, control_zoom),
+                zoom_average_count(observed_file, observed_matrix, observed_zoom),
+            ),
+        ),
         MatrixType::Ratio
         | MatrixType::RatioV2
         | MatrixType::RatioP1
@@ -1344,6 +1430,10 @@ fn build_comparison_tile(
         | MatrixType::ObservedExpectedRatioP1V2
         | MatrixType::ObservedExpectedMinus
         | MatrixType::ObservedExpectedMinusP1
+        | MatrixType::LogRatio
+        | MatrixType::LogRatioV2
+        | MatrixType::LogExpectedRatio
+        | MatrixType::LogExpectedRatioV2
         | MatrixType::Difference => {
             unreachable!("paired-contact modes use their dedicated rasterization path")
         }
@@ -1895,6 +1985,11 @@ fn accumulate_block(
                 | MatrixType::ObservedOverExpectedVsP1V2
                 | MatrixType::ObservedMinusExpectedVs
                 | MatrixType::LogObservedExpectedVs
+                | MatrixType::LogVs
+                | MatrixType::LogRatio
+                | MatrixType::LogRatioV2
+                | MatrixType::LogExpectedRatio
+                | MatrixType::LogExpectedRatioV2
                 | MatrixType::PearsonVs => {
                     unreachable!("comparison tiles use the dual-dataset path")
                 }
@@ -1982,6 +2077,11 @@ fn matrix_type_id(matrix_type: MatrixType) -> u32 {
         MatrixType::ObservedExpectedRatioP1V2 => 41,
         MatrixType::ObservedExpectedMinus => 42,
         MatrixType::ObservedExpectedMinusP1 => 43,
+        MatrixType::LogVs => 44,
+        MatrixType::LogRatio => 45,
+        MatrixType::LogRatioV2 => 46,
+        MatrixType::LogExpectedRatio => 47,
+        MatrixType::LogExpectedRatioV2 => 48,
     }
 }
 

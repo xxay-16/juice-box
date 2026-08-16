@@ -54,7 +54,8 @@ fn main() -> Result<()> {
     .chain(MatrixType::EXPECTED_PSEUDOCOUNT_MODES)
     .chain(MatrixType::EXPECTED_TRANSFORM_MODES)
     .chain(MatrixType::RATIO_BASELINE_MODES)
-    .chain(MatrixType::EXPECTED_COMPARISON_MODES);
+    .chain(MatrixType::EXPECTED_COMPARISON_MODES)
+    .chain(MatrixType::LOG_COMPARISON_MODES);
     for matrix_type in modes {
         engine.update_matrix_type(matrix_type);
         viewport.generation = viewport.generation.wrapping_add(1);
@@ -117,6 +118,11 @@ fn mode_name(matrix_type: MatrixType) -> &'static str {
         MatrixType::ObservedExpectedRatioP1V2 => "OERATIOP1V2",
         MatrixType::ObservedExpectedMinus => "OERATIOMINUS",
         MatrixType::ObservedExpectedMinusP1 => "OERATIOMINUSP1",
+        MatrixType::LogVs => "LOGVS",
+        MatrixType::LogRatio => "LOGRATIO",
+        MatrixType::LogRatioV2 => "LOGRATIOV2",
+        MatrixType::LogExpectedRatio => "LOGEORATIO",
+        MatrixType::LogExpectedRatioV2 => "LOGEORATIOV2",
         _ => unreachable!(),
     }
 }
