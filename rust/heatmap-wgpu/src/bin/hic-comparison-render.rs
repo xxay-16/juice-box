@@ -48,28 +48,7 @@ fn main() -> Result<()> {
     )?;
     let mut viewport = GenomeViewport::new(chromosome.length, 1.0);
 
-    let modes = [
-        MatrixType::Vs,
-        MatrixType::Ratio,
-        MatrixType::RatioV2,
-        MatrixType::ObservedOverExpectedVs,
-        MatrixType::PearsonVs,
-        MatrixType::ObservedOverExpectedV2,
-        MatrixType::ControlOverExpectedV2,
-        MatrixType::ObservedOverExpectedVsV2,
-        MatrixType::LogObserved,
-        MatrixType::LogControl,
-        MatrixType::LogObservedExpected,
-        MatrixType::LogControlExpected,
-        MatrixType::LogObservedExpectedVs,
-    ]
-    .into_iter()
-    .chain(MatrixType::EXPECTED_PSEUDOCOUNT_MODES)
-    .chain(MatrixType::EXPECTED_TRANSFORM_MODES)
-    .chain(MatrixType::RATIO_BASELINE_MODES)
-    .chain(MatrixType::EXPECTED_COMPARISON_MODES)
-    .chain(MatrixType::LOG_COMPARISON_MODES);
-    for matrix_type in modes {
+    for matrix_type in MatrixType::PRODUCTION_RAW_PIXEL_MODES {
         engine.update_matrix_type(matrix_type);
         viewport.generation = viewport.generation.wrapping_add(1);
         engine.request(viewport);

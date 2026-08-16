@@ -64,7 +64,7 @@ UI adapter
   log-ratio 色阶，Log 模式按 Java float 加法与 double `Math.log` 精度生成 R32F 值；
 - advanced expected/pseudocount 第一族：OEP1/OEP1V2、OECTRLP1/OECTRLP1V2、
   OEVSP1/OEVSP1V2，以及独立 LOGEO/LOGCEO；它们已进入 JDK 25 production raw-pixel
-  Gate，但在完整 advanced 菜单完成前不混入标准 `M` 键循环；
+  Gate，并可由 `V` 打开的 Matrix View 选择器访问；标准 `M` 键循环仍保持精简；
 - advanced transform/subtraction 第二族：EXPLOGEO、EXPLOGCEO、OCMEVS 和 DIFF；
   OME/CME 作为 OCMEVS 的内部 observed/control source type 使用，因为当前 Java
   `HeatmapRenderer.render` 没有可作为权威基准的独立 OME/CME renderer 分支；
@@ -80,8 +80,12 @@ UI adapter
 - normalization-squared 第六族：NORM2/NORM2CTRL/NORM2OBSVSCTRL 在当前 1024² viewport
   内按实际 KR/VC/VC_SQRT normalization vector 计算 `1/(nvX*nvY*distance^4)`，Assembly
   模式先将 display bin 映射回 source bin。数值保持 Java double 公式再转 float，但避免
-  Java 为整条染色体分配 `double[][]` 的 O(n²) 内存问题；三种模式已进入主程序 `M` 键
-  循环，若当前 normalization 为 NONE 会先切到 KR；
+  Java 为整条染色体分配 `double[][]` 的 O(n²) 内存问题；三种模式已进入 Matrix View
+  选择器和主程序 `M` 键循环，若当前 normalization 为 NONE 会先切到 KR；
+- GPU Matrix View overlay：`V` 打开、方向键/PageUp/PageDown/Home/End 导航、Enter 应用、
+  Esc 取消；overlay 使用内置 5×7 ASCII 位图字体和独立 alpha-blended pipeline，不依赖
+  系统字体，portable 仍保持单 EXE。选择器直接覆盖全部 43 个 production-gated 模式，
+  并根据 control 可用性和染色体轴语义过滤无效项；
 - visible Block 并行解压后逐块栅格化和上传，进入视口的新区域无需等待全部 Block；
 - 真实 v8 数据的 raw/normalized Block、normalization vector、expected vector 和 O/E
   逐 record Java/Rust 指纹 Gate。
@@ -94,7 +98,8 @@ EXPLOGEO/EXPLOGCEO/OCMEVS、RATIOP1/RATIO0/RATIO0P1、OERATIO、LOG comparison �
 每模式比对 36 个有序像素。Java legacy session 现可恢复单 observed、最多一个 control、
 染色体轴（含 X/Y 转置）、独立轴边界、BP resolution lock、origin/scale、已支持的 MatrixType、
 normalization 与颜色范围；滚轮首次缩放后解除 saved resolution lock 并回到自动 LOD。
-多 map summation、FRAG、track/annotation/loop 资源和多 state 图形选择器尚未实现。其余 Java advanced 菜单仍未实现，因此这仍不是完整迁移：高级 Assembly 多选/phase 工具和
+多 map summation、FRAG、track/annotation/loop 资源和多 state 图形选择器尚未实现。独立
+OME/CME、NORM/EIGENVECTOR 仍未公开/实现，因此这仍不是完整迁移：高级 Assembly 多选/phase 工具和
 跨设备验收尚未完成，不能据此替换 Java 主程序。GPU 初始化失败时已自动尝试软件/CPU
 适配器，并提供 `JUICEBOX_FORCE_CPU=1` 验收开关。
 
@@ -113,6 +118,7 @@ cargo run -p heatmap-wgpu -- tools\fixtures\legacy-session-real-data.xml [Select
 最后一个命令会打开 GPU 原型。左键拖动、滚轮缩放；`+/-` 调色，`A` 恢复
 自动色阶，`R` 重置视图。右键选择 scaffold，再右键目标 scaffold 即移动到目标
 前，Ctrl+Z/Y 撤销重做，Ctrl+S 保存 modified assembly。`N` 切换 normalization，
+`M` 快速循环标准模式，`V` 打开全部已验证 Matrix View 的图形选择器。
 不传 control 文件时，`M` 切换 Observed / Expected / O/E / OEV2 / Pearson / LOG。传入第四个位置参数
 `control.hic` 后，会循环 Java 默认的 18 个标准模式，包括 Control、VS、Ratio/RatioV2、
 O/E/OEV2 三组 observed/control/VS、Pearson 三组和 LOG/LOGC/LOGEOVS；单数据源视图中

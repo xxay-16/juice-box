@@ -6,6 +6,7 @@ macro_rules! app_log {
     };
 }
 
+mod mode_picker;
 mod tile_engine;
 
 use std::{
@@ -22,6 +23,7 @@ use assembly_core::{AssemblyCoordinateMap, AssemblyDocument, AssemblyEditor, Ass
 use bytemuck::{Pod, Zeroable};
 use heatmap_core::{GenomeViewport, IntensityTile};
 use hic_core::{Chromosome, HicFile};
+use mode_picker::{ModePicker, PICKER_HEIGHT, PICKER_WIDTH, selectable_modes};
 use session_core::{LegacySessionState, read_legacy_session};
 use tile_engine::{
     DatasetLaunch, MatrixType, Normalization, TileEngine, TileResult, rendered_viewport_for,
@@ -32,7 +34,7 @@ use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    keyboard::{KeyCode, PhysicalKey},
+    keyboard::{Key, KeyCode, NamedKey, PhysicalKey},
     window::{Window, WindowAttributes, WindowId},
 };
 
@@ -90,9 +92,12 @@ struct GpuState {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
+    overlay_pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
+    overlay_bind_group: wgpu::BindGroup,
     uniform_buffer: wgpu::Buffer,
     texture: wgpu::Texture,
+    overlay_texture: wgpu::Texture,
     texture_size: [u32; 2],
 }
 
@@ -229,6 +234,39 @@ impl GpuState {
                 },
             ],
         });
+        let overlay_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("matrix-mode-picker-overlay"),
+            size: wgpu::Extent3d {
+                width: PICKER_WIDTH,
+                height: PICKER_HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let overlay_view = overlay_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let overlay_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("matrix-mode-picker-bind-group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&overlay_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+            ],
+        });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("heatmap shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
@@ -263,15 +301,47 @@ impl GpuState {
             multiview: None,
             cache: None,
         });
+        let overlay_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("matrix-mode-picker-shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("mode_picker.wgsl").into()),
+        });
+        let overlay_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("matrix-mode-picker-pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &overlay_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &overlay_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
         Ok(Self {
             surface,
             device,
             queue,
             config,
             pipeline,
+            overlay_pipeline,
             bind_group,
+            overlay_bind_group,
             uniform_buffer,
             texture,
+            overlay_texture,
             texture_size: [tile.width, tile.height],
         })
     }
@@ -303,6 +373,29 @@ impl GpuState {
         }
     }
 
+    fn update_mode_picker(&self, picker: &ModePicker) {
+        let rgba = picker.render_rgba();
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.overlay_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(PICKER_WIDTH * 4),
+                rows_per_image: Some(PICKER_HEIGHT),
+            },
+            wgpu::Extent3d {
+                width: PICKER_WIDTH,
+                height: PICKER_HEIGHT,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
     fn render(
         &mut self,
         requested: GenomeViewport,
@@ -310,6 +403,7 @@ impl GpuState {
         color_range: [f32; 2],
         selected_range: Option<[u64; 2]>,
         color_mode: f32,
+        show_mode_picker: bool,
     ) -> Result<(), wgpu::SurfaceError> {
         let requested_bounds = requested.bounds_bp();
         let displayed_bounds = displayed.bounds_bp();
@@ -367,6 +461,11 @@ impl GpuState {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.draw(0..3, 0..1);
+            if show_mode_picker {
+                pass.set_pipeline(&self.overlay_pipeline);
+                pass.set_bind_group(0, &self.overlay_bind_group, &[]);
+                pass.draw(0..3, 0..1);
+            }
         }
         self.queue.submit(Some(encoder.finish()));
         output.present();
@@ -520,6 +619,7 @@ struct App {
     last_cursor: Option<PhysicalPosition<f64>>,
     cursor: PhysicalPosition<f64>,
     base_title: String,
+    status_title: String,
     request_pending: bool,
     in_flight_viewport: Option<GenomeViewport>,
     last_submitted_generation: u64,
@@ -534,7 +634,9 @@ struct App {
     normalization: Normalization,
     control_normalization: Normalization,
     matrix_type: MatrixType,
+    mode_picker: Option<ModePicker>,
     control_available: bool,
+    intrachromosomal: bool,
     resolution_hint: Option<u32>,
 }
 
@@ -551,12 +653,14 @@ impl App {
         assembly: Option<AssemblyDocument>,
         assembly_path: Option<PathBuf>,
         control_available: bool,
+        intrachromosomal: bool,
         resolution_hint: Option<u32>,
         initial_color_range: Option<[f32; 2]>,
         normalization: Normalization,
         control_normalization: Normalization,
         matrix_type: MatrixType,
     ) -> Self {
+        let status_title = base_title.clone();
         Self {
             window: None,
             gpu: None,
@@ -572,6 +676,7 @@ impl App {
             last_cursor: None,
             cursor: PhysicalPosition::new(0.0, 0.0),
             base_title,
+            status_title,
             request_pending: false,
             in_flight_viewport: None,
             last_submitted_generation: viewport.generation,
@@ -586,7 +691,9 @@ impl App {
             normalization,
             control_normalization,
             matrix_type,
+            mode_picker: None,
             control_available,
+            intrachromosomal,
             resolution_hint,
         }
     }
@@ -624,6 +731,63 @@ impl App {
         } else {
             self.active_normalization().label().to_owned()
         }
+    }
+
+    fn open_mode_picker(&mut self, window: &Window) {
+        if self.dragging {
+            self.dragging = false;
+            self.last_cursor = None;
+            self.request_settled_viewport();
+        }
+        let picker = ModePicker::new(
+            selectable_modes(self.control_available, self.intrachromosomal),
+            self.matrix_type,
+        );
+        if let Some(gpu) = self.gpu.as_ref() {
+            gpu.update_mode_picker(&picker);
+        }
+        self.mode_picker = Some(picker);
+        window.set_title(&format!(
+            "{} — Matrix View Picker — arrows/Enter/Esc",
+            self.base_title
+        ));
+        window.request_redraw();
+    }
+
+    fn refresh_mode_picker(&mut self, window: &Window) {
+        if let (Some(gpu), Some(picker)) = (self.gpu.as_ref(), self.mode_picker.as_ref()) {
+            gpu.update_mode_picker(picker);
+            window.request_redraw();
+        }
+    }
+
+    fn apply_matrix_type(&mut self, matrix_type: MatrixType) {
+        self.matrix_type = matrix_type;
+        if matches!(
+            self.matrix_type,
+            MatrixType::NormSquared | MatrixType::NormSquaredVs
+        ) && self.normalization == Normalization::None
+        {
+            self.normalization = Normalization::Kr;
+            self.engine.update_normalization(self.normalization);
+        }
+        if matches!(
+            self.matrix_type,
+            MatrixType::ControlNormSquared | MatrixType::NormSquaredVs
+        ) && self.control_normalization == Normalization::None
+        {
+            self.control_normalization = Normalization::Kr;
+            self.engine
+                .update_control_normalization(self.control_normalization);
+        }
+        self.engine.update_matrix_type(self.matrix_type);
+        self.requested_viewport.generation = self.requested_viewport.generation.wrapping_add(1);
+        self.request_current();
+        app_log!(
+            "matrix type changed: {} ({})",
+            self.matrix_type.java_name(),
+            self.matrix_type.label()
+        );
     }
 
     fn schedule_request(&mut self) {
@@ -783,7 +947,7 @@ impl App {
                             self.color_range[1] = result.color_max;
                         }
                     }
-                    window.set_title(&format!(
+                    self.status_title = format!(
                         "{} — {} — {} — {} bp — blocks {}/{}{} — {:.1} ms — cache {}/{} — color {}",
                         self.base_title,
                         self.normalization_title(),
@@ -800,7 +964,8 @@ impl App {
                         } else {
                             "manual"
                         },
-                    ));
+                    );
+                    window.set_title(&self.status_title);
                     if result.complete {
                         app_log!(
                             "tile displayed: generation={} center=({:.0},{:.0}) span={:.0} resolution={} blocks={}/{} load={:.1} ms cache={}/{} upload={} bytes",
@@ -1128,7 +1293,7 @@ impl ApplicationHandler for App {
                 state,
                 button: MouseButton::Left,
                 ..
-            } => {
+            } if heatmap_pointer_input_enabled(self.mode_picker.is_some()) => {
                 self.dragging = state == ElementState::Pressed;
                 if self.dragging {
                     self.last_cursor = Some(self.cursor);
@@ -1141,7 +1306,7 @@ impl ApplicationHandler for App {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
-            } => {
+            } if heatmap_pointer_input_enabled(self.mode_picker.is_some()) => {
                 if let Err(error) = self.select_or_move_scaffold(&window) {
                     app_log!("assembly selection failed: {error:#}");
                 }
@@ -1151,7 +1316,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = position;
-                if self.dragging {
+                if self.dragging && heatmap_pointer_input_enabled(self.mode_picker.is_some()) {
                     if let Some(previous) = self.last_cursor {
                         let side = f64::from(
                             window
@@ -1171,7 +1336,9 @@ impl ApplicationHandler for App {
                     self.last_cursor = Some(position);
                 }
             }
-            WindowEvent::MouseWheel { delta, .. } => {
+            WindowEvent::MouseWheel { delta, .. }
+                if heatmap_pointer_input_enabled(self.mode_picker.is_some()) =>
+            {
                 if self.resolution_hint.take().is_some() {
                     self.engine.update_resolution_hint(None);
                     app_log!("session resolution lock released; automatic LOD enabled");
@@ -1188,6 +1355,53 @@ impl ApplicationHandler for App {
                 window.request_redraw();
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                if self.mode_picker.is_some() {
+                    match event.logical_key {
+                        Key::Named(NamedKey::ArrowUp) => {
+                            self.mode_picker.as_mut().unwrap().move_by(-1);
+                            self.refresh_mode_picker(&window);
+                        }
+                        Key::Named(NamedKey::ArrowDown) => {
+                            self.mode_picker.as_mut().unwrap().move_by(1);
+                            self.refresh_mode_picker(&window);
+                        }
+                        Key::Named(NamedKey::PageUp) => {
+                            self.mode_picker.as_mut().unwrap().page(-1);
+                            self.refresh_mode_picker(&window);
+                        }
+                        Key::Named(NamedKey::PageDown) => {
+                            self.mode_picker.as_mut().unwrap().page(1);
+                            self.refresh_mode_picker(&window);
+                        }
+                        Key::Named(NamedKey::Home) => {
+                            self.mode_picker.as_mut().unwrap().home();
+                            self.refresh_mode_picker(&window);
+                        }
+                        Key::Named(NamedKey::End) => {
+                            self.mode_picker.as_mut().unwrap().end();
+                            self.refresh_mode_picker(&window);
+                        }
+                        Key::Named(NamedKey::Enter) => {
+                            let selected =
+                                self.mode_picker.take().and_then(|picker| picker.selected());
+                            if let Some(selected) = selected {
+                                self.apply_matrix_type(selected);
+                            }
+                        }
+                        Key::Named(NamedKey::Escape) => {
+                            self.mode_picker = None;
+                            window.set_title(&self.status_title);
+                            window.request_redraw();
+                        }
+                        Key::Character(ref value) if value.eq_ignore_ascii_case("v") => {
+                            self.mode_picker = None;
+                            window.set_title(&self.status_title);
+                            window.request_redraw();
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
                 match event.physical_key {
                     PhysicalKey::Code(KeyCode::ArrowUp | KeyCode::Equal) => {
                         self.color_range[1] *= 1.12;
@@ -1236,29 +1450,10 @@ impl ApplicationHandler for App {
                         );
                     }
                     PhysicalKey::Code(KeyCode::KeyM) => {
-                        self.matrix_type = self.matrix_type.next(self.control_available);
-                        if matches!(
-                            self.matrix_type,
-                            MatrixType::NormSquared | MatrixType::NormSquaredVs
-                        ) && self.normalization == Normalization::None
-                        {
-                            self.normalization = Normalization::Kr;
-                            self.engine.update_normalization(self.normalization);
-                        }
-                        if matches!(
-                            self.matrix_type,
-                            MatrixType::ControlNormSquared | MatrixType::NormSquaredVs
-                        ) && self.control_normalization == Normalization::None
-                        {
-                            self.control_normalization = Normalization::Kr;
-                            self.engine
-                                .update_control_normalization(self.control_normalization);
-                        }
-                        self.engine.update_matrix_type(self.matrix_type);
-                        self.requested_viewport.generation =
-                            self.requested_viewport.generation.wrapping_add(1);
-                        self.request_current();
-                        app_log!("matrix type changed: {}", self.matrix_type.label());
+                        self.apply_matrix_type(self.matrix_type.next(self.control_available));
+                    }
+                    PhysicalKey::Code(KeyCode::KeyV) => {
+                        self.open_mode_picker(&window);
                     }
                     PhysicalKey::Code(KeyCode::KeyI) => {
                         if let (Some(editor), Some(selected)) =
@@ -1350,6 +1545,7 @@ impl ApplicationHandler for App {
                         .then_some(1.0)
                         .or_else(|| self.matrix_type.uses_log_ratio_color_scale().then_some(2.0))
                         .unwrap_or(0.0),
+                        self.mode_picker.is_some(),
                     ) {
                         Ok(()) => {}
                         Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -1376,6 +1572,10 @@ fn cursor_in_square(cursor: PhysicalPosition<f64>, size: PhysicalSize<u32>) -> [
         ((cursor.x - left) / side).clamp(0.0, 1.0),
         ((cursor.y - top) / side).clamp(0.0, 1.0),
     ]
+}
+
+fn heatmap_pointer_input_enabled(mode_picker_open: bool) -> bool {
+    !mode_picker_open
 }
 
 fn viewport_needs_refresh(requested: GenomeViewport, displayed: GenomeViewport) -> bool {
@@ -1758,6 +1958,7 @@ fn run() -> Result<()> {
         assembly,
         resolved_assembly_path.filter(|path| path.is_file()),
         control_available,
+        matrix.chromosome_1 == matrix.chromosome_2,
         launch.resolution_hint,
         launch.color_range,
         launch.normalization,
@@ -2025,6 +2226,12 @@ mod tests {
             cursor_in_square(PhysicalPosition::new(900.0, 800.0), size),
             [1.0, 1.0]
         );
+    }
+
+    #[test]
+    fn matrix_picker_blocks_heatmap_pointer_input() {
+        assert!(heatmap_pointer_input_enabled(false));
+        assert!(!heatmap_pointer_input_enabled(true));
     }
 
     #[test]

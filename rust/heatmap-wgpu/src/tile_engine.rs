@@ -115,15 +115,7 @@ pub enum MatrixType {
     Expected,
     ObservedOverExpected,
     ObservedOverExpectedV2,
-    #[allow(
-        dead_code,
-        reason = "advanced mode is exercised by the production parity binary before the UI menu is complete"
-    )]
     ObservedOverExpectedP1,
-    #[allow(
-        dead_code,
-        reason = "advanced mode is exercised by the production parity binary before the UI menu is complete"
-    )]
     ObservedOverExpectedP1V2,
     Pearson,
     LogObserved,
@@ -133,15 +125,7 @@ pub enum MatrixType {
     Control,
     ControlOverExpected,
     ControlOverExpectedV2,
-    #[allow(
-        dead_code,
-        reason = "advanced mode is exercised by the production parity binary before the UI menu is complete"
-    )]
     ControlOverExpectedP1,
-    #[allow(
-        dead_code,
-        reason = "advanced mode is exercised by the production parity binary before the UI menu is complete"
-    )]
     ControlOverExpectedP1V2,
     ControlPearson,
     LogControl,
@@ -166,15 +150,7 @@ pub enum MatrixType {
     Difference,
     ObservedOverExpectedVs,
     ObservedOverExpectedVsV2,
-    #[allow(
-        dead_code,
-        reason = "advanced mode is exercised by the production parity binary before the UI menu is complete"
-    )]
     ObservedOverExpectedVsP1,
-    #[allow(
-        dead_code,
-        reason = "advanced mode is exercised by the production parity binary before the UI menu is complete"
-    )]
     ObservedOverExpectedVsP1V2,
     ObservedMinusExpectedVs,
     LogObservedExpectedVs,
@@ -190,12 +166,193 @@ pub enum MatrixType {
 }
 
 impl MatrixType {
-    /// First advanced-view family implemented behind the production parity
-    /// gate. These arrays also keep the standalone parity binary exhaustive;
-    /// the main viewer exposes the fully gated families through its mode cycle.
+    pub fn java_name(self) -> &'static str {
+        match self {
+            Self::Observed => "OBSERVED",
+            Self::Expected => "EXPECTED",
+            Self::ObservedOverExpected => "OE",
+            Self::ObservedOverExpectedV2 => "OEV2",
+            Self::ObservedOverExpectedP1 => "OEP1",
+            Self::ObservedOverExpectedP1V2 => "OEP1V2",
+            Self::Pearson => "PEARSON",
+            Self::LogObserved => "LOG",
+            Self::LogObservedExpected => "LOGEO",
+            Self::ExpLogObservedExpected => "EXPLOGEO",
+            Self::ObservedMinusExpected => "OME",
+            Self::Control => "CONTROL",
+            Self::ControlOverExpected => "OECTRL",
+            Self::ControlOverExpectedV2 => "OECTRLV2",
+            Self::ControlOverExpectedP1 => "OECTRLP1",
+            Self::ControlOverExpectedP1V2 => "OECTRLP1V2",
+            Self::ControlPearson => "PEARSONCTRL",
+            Self::LogControl => "LOGC",
+            Self::LogControlExpected => "LOGCEO",
+            Self::ExpLogControlExpected => "EXPLOGCEO",
+            Self::ControlMinusExpected => "CME",
+            Self::Vs => "VS",
+            Self::Ratio => "RATIO",
+            Self::RatioV2 => "RATIOV2",
+            Self::RatioP1 => "RATIOP1",
+            Self::RatioP1V2 => "RATIOP1V2",
+            Self::RatioExpectedZero => "RATIO0",
+            Self::RatioExpectedZeroV2 => "RATIO0V2",
+            Self::RatioExpectedZeroP1 => "RATIO0P1",
+            Self::RatioExpectedZeroP1V2 => "RATIO0P1V2",
+            Self::ObservedExpectedRatio => "OERATIO",
+            Self::ObservedExpectedRatioV2 => "OERATIOV2",
+            Self::ObservedExpectedRatioP1 => "OERATIOP1",
+            Self::ObservedExpectedRatioP1V2 => "OERATIOP1V2",
+            Self::ObservedExpectedMinus => "OERATIOMINUS",
+            Self::ObservedExpectedMinusP1 => "OERATIOMINUSP1",
+            Self::Difference => "DIFF",
+            Self::ObservedOverExpectedVs => "OEVS",
+            Self::ObservedOverExpectedVsV2 => "OEVSV2",
+            Self::ObservedOverExpectedVsP1 => "OEVSP1",
+            Self::ObservedOverExpectedVsP1V2 => "OEVSP1V2",
+            Self::ObservedMinusExpectedVs => "OCMEVS",
+            Self::LogObservedExpectedVs => "LOGEOVS",
+            Self::LogVs => "LOGVS",
+            Self::LogRatio => "LOGRATIO",
+            Self::LogRatioV2 => "LOGRATIOV2",
+            Self::LogExpectedRatio => "LOGEORATIO",
+            Self::LogExpectedRatioV2 => "LOGEORATIOV2",
+            Self::NormSquared => "NORM2",
+            Self::ControlNormSquared => "NORM2CTRL",
+            Self::NormSquaredVs => "NORM2OBSVSCTRL",
+            Self::PearsonVs => "PEARSONVS",
+        }
+    }
+
+    pub const ADVANCED_NO_CONTROL: [Self; 11] = [
+        Self::Observed,
+        Self::Expected,
+        Self::ObservedOverExpected,
+        Self::ObservedOverExpectedV2,
+        Self::ObservedOverExpectedP1,
+        Self::ObservedOverExpectedP1V2,
+        Self::Pearson,
+        Self::LogObserved,
+        Self::LogObservedExpected,
+        Self::ExpLogObservedExpected,
+        Self::NormSquared,
+    ];
+
+    pub const ADVANCED_WITH_CONTROL: [Self; 50] = [
+        Self::Observed,
+        Self::Expected,
+        Self::ObservedOverExpected,
+        Self::ObservedOverExpectedV2,
+        Self::ObservedOverExpectedP1,
+        Self::ObservedOverExpectedP1V2,
+        Self::Pearson,
+        Self::LogObserved,
+        Self::LogObservedExpected,
+        Self::ExpLogObservedExpected,
+        Self::NormSquared,
+        Self::Control,
+        Self::ControlOverExpected,
+        Self::ControlOverExpectedV2,
+        Self::ControlOverExpectedP1,
+        Self::ControlOverExpectedP1V2,
+        Self::ControlPearson,
+        Self::LogControl,
+        Self::LogControlExpected,
+        Self::ExpLogControlExpected,
+        Self::ControlNormSquared,
+        Self::Vs,
+        Self::Ratio,
+        Self::RatioV2,
+        Self::RatioP1,
+        Self::RatioP1V2,
+        Self::RatioExpectedZero,
+        Self::RatioExpectedZeroV2,
+        Self::RatioExpectedZeroP1,
+        Self::RatioExpectedZeroP1V2,
+        Self::ObservedExpectedRatio,
+        Self::ObservedExpectedRatioV2,
+        Self::ObservedExpectedRatioP1,
+        Self::ObservedExpectedRatioP1V2,
+        Self::ObservedExpectedMinus,
+        Self::ObservedExpectedMinusP1,
+        Self::ObservedOverExpectedVs,
+        Self::ObservedOverExpectedVsV2,
+        Self::ObservedOverExpectedVsP1,
+        Self::ObservedOverExpectedVsP1V2,
+        Self::ObservedMinusExpectedVs,
+        Self::PearsonVs,
+        Self::Difference,
+        Self::LogVs,
+        Self::LogObservedExpectedVs,
+        Self::LogRatio,
+        Self::LogRatioV2,
+        Self::LogExpectedRatio,
+        Self::LogExpectedRatioV2,
+        Self::NormSquaredVs,
+    ];
+
+    /// Matrix views compared directly against Java's production
+    /// `HeatmapRenderer.render` ordered-pixel output. The three NORM2 views
+    /// use a normalized fixture and remain in `NORM_SQUARED_MODES`.
     #[allow(
         dead_code,
-        reason = "the primary viewer keeps the standard Java menu until the complete advanced menu is ready"
+        reason = "the production verifier compiles tile_engine as a separate binary module"
+    )]
+    pub const PRODUCTION_RAW_PIXEL_MODES: [Self; 40] = [
+        Self::Vs,
+        Self::Ratio,
+        Self::RatioV2,
+        Self::ObservedOverExpectedVs,
+        Self::PearsonVs,
+        Self::ObservedOverExpectedV2,
+        Self::ControlOverExpectedV2,
+        Self::ObservedOverExpectedVsV2,
+        Self::LogObserved,
+        Self::LogControl,
+        Self::LogObservedExpected,
+        Self::LogControlExpected,
+        Self::LogObservedExpectedVs,
+        Self::ObservedOverExpectedP1,
+        Self::ObservedOverExpectedP1V2,
+        Self::ControlOverExpectedP1,
+        Self::ControlOverExpectedP1V2,
+        Self::ObservedOverExpectedVsP1,
+        Self::ObservedOverExpectedVsP1V2,
+        Self::ExpLogObservedExpected,
+        Self::ExpLogControlExpected,
+        Self::ObservedMinusExpectedVs,
+        Self::Difference,
+        Self::RatioP1,
+        Self::RatioP1V2,
+        Self::RatioExpectedZero,
+        Self::RatioExpectedZeroV2,
+        Self::RatioExpectedZeroP1,
+        Self::RatioExpectedZeroP1V2,
+        Self::ObservedExpectedRatio,
+        Self::ObservedExpectedRatioV2,
+        Self::ObservedExpectedRatioP1,
+        Self::ObservedExpectedRatioP1V2,
+        Self::ObservedExpectedMinus,
+        Self::ObservedExpectedMinusP1,
+        Self::LogVs,
+        Self::LogRatio,
+        Self::LogRatioV2,
+        Self::LogExpectedRatio,
+        Self::LogExpectedRatioV2,
+    ];
+
+    pub fn selectable_modes(control_available: bool) -> &'static [Self] {
+        if control_available {
+            &Self::ADVANCED_WITH_CONTROL
+        } else {
+            &Self::ADVANCED_NO_CONTROL
+        }
+    }
+
+    /// Families retained as explicit production parity groups for the
+    /// standalone Java/Rust ordered-pixel verifier.
+    #[allow(
+        dead_code,
+        reason = "the production verifier compiles tile_engine as a separate binary module"
     )]
     pub const EXPECTED_PSEUDOCOUNT_MODES: [Self; 6] = [
         Self::ObservedOverExpectedP1,
@@ -492,6 +649,10 @@ impl MatrixType {
                 | Self::NormSquaredVs
                 | Self::PearsonVs
         )
+    }
+
+    pub(crate) fn available_for_axes(self, intrachromosomal: bool) -> bool {
+        intrachromosomal || !(self.needs_expected() || self.is_pearson() || self.is_vs_display())
     }
 
     pub(crate) fn needs_expected(self) -> bool {

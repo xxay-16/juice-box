@@ -53,7 +53,9 @@
    因为当前 Java `HeatmapRenderer.render` 没有独立 renderer 分支；其余 Java advanced
    MatrixType 仍未通过。2026-08-16 使用 JDK 25 和真实 `genome.hic` 的完整 Gate 已输出
    `Production pixel-grid match: ... (43 modes, 36 ordered cells per mode)` 与
-   `Real-data verification passed.`。
+   `Real-data verification passed.`。43 个已通过模式现均可通过 `V` 打开的 Matrix View
+   选择器访问；选择器按 control 可用性和染色体轴限制过滤无效模式。独立 OME/CME、
+   NORM/EIGENVECTOR 仍不在公开选择器中。
 3. GPU Gate：真实数据拖动、缩放、调色、256 MiB CPU Block 预算、generation 取消、
    overscan 覆盖区零读取和动态 LOD已通过单机验证；显存预算、长时间运行和跨 GPU
    验收仍待完成。
@@ -67,7 +69,8 @@
    normalization 和颜色范围。真实 `genome.hic` 已验证 NORM2OBSVSCTRL + KR + 500 kb 启动，
    且滚轮后解除 exact-resolution lock。multi-map summation、FRAG、track/annotation/loop
    恢复和图形化 state 选择器仍待完成。
-6. UI Gate：通过上述门槛后再决定 Qt/QML、Slint、egui 或其他 UI。
+6. UI Gate：已加入无需系统字体的 GPU Matrix View overlay，并可选择全部已通过科学 Gate
+   的模式；完整 Java UI、multi-state/session 资源与高级 Assembly 工具仍未迁移。
 7. Release Gate：Windows 静态 CRT 单 EXE、图标、文件选择、本地日志和自动 CPU/软件
    适配器回退已通过；兼容、跨设备和长时间运行全部通过后，才考虑替换 Java 主程序。
 

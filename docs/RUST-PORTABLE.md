@@ -25,6 +25,10 @@ tracks/annotations/loops 尚未恢复。
   Java 默认菜单的 18 个标准模式：基础 observed/control、VS、RATIO/RATIOV2、
   O/E/OEV2 的 observed/control/VS、Pearson 的 observed/control/VS，以及 LOG/LOGC/LOGEOVS；observed/control
   normalization 与缓存彼此独立。
+- `V`：打开完整的已验证 Matrix View 选择器；用 `↑/↓`、`PageUp/PageDown`、
+  `Home/End` 导航，`Enter` 应用，`Esc` 或再次按 `V` 取消。选择器包含已通过
+  JDK 25 production pixel Gate 的高级模式；跨染色体视图会自动隐藏依赖 expected、
+  Pearson 或上下三角 VS 的同染色体模式。
 - 右键第一次：选择 scaffold；右键第二次点另一个 scaffold：把选中项移动到目标项前，
   原位置后的 scaffold 会自动顺次补上。`I`：翻转选中 scaffold。
 - `D`：在选中 scaffold 内设置 debris 起点；移动鼠标后再次按 `D`，把两点之间
@@ -49,8 +53,9 @@ vector 解码，以及 NONE/KR/VC/VC_SQRT 下的 Observed、Expected、O/E 和 P
 合并、撤销/重做和 modified assembly 保存。Control 双数据源的基础 Control、
 Control/ExpectedC、Control Pearson、VS、RATIO/RATIOV2、OEVS、PearsonVS、
 OEV2/OECTRLV2/OEVSV2、LOG/LOGC/LOGEOVS 与 NORM2 三模式已接入，并通过 Java production renderer
-有序像素 Gate；NORM2 三模式可通过 `M` 键循环选择，NONE 会自动切换为 KR。Java legacy
-session 的基础视图状态已可恢复；其余未接入菜单的高级模式、session tracks/annotations
+有序像素 Gate；全部 43 个已 Gate 模式可通过 `V` 选择器访问，`M` 仍保留为标准模式
+快速循环，NORM2 在 NONE 下会自动切换为 KR。Java legacy session 的基础视图状态已可恢复；
+独立 OME/CME（当前仅作为 OCMEVS 内部 source type）、NORM/EIGENVECTOR、session tracks/annotations
 和全部 Java UI 功能
 仍由 JDK 25 主版本提供；未实现模式不能用于科研结论。
 
